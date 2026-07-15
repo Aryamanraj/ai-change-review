@@ -2,6 +2,10 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.1.3 — 2026-07-15
+
+- Ship PNG-only artwork to satisfy Visual Studio Marketplace publishing requirements.
+
 ## 0.1.2 — 2026-07-15
 
 - Make kept hunks render as normal code in the review editor.
