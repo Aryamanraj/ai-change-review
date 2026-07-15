@@ -2,6 +2,10 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.1.1 — 2026-07-15
+
+- Replace the generic Activity Bar icon with a dedicated AI change-review mark.
+
 ## 0.1.0 — 2026-07-15
 
 - First public release of AI Change Review.
