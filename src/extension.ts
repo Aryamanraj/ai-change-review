@@ -38,7 +38,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     return undefined;
   };
   const showError = (error: unknown) => { output.appendLine(String(error)); void vscode.window.showErrorMessage(`AI Change Review: ${error instanceof Error ? error.message : String(error)}`); };
+  const endSession = async (): Promise<void> => {
+    if (!manager.active) { return; }
+    const pending = manager.records().length;
+    if (pending) {
+      const choice = await vscode.window.showWarningMessage(`${pending} pending file${pending === 1 ? "" : "s"} remain.`, "Accept all and end", "Reject all and end", "Keep recovery snapshot", "Cancel");
+      if (choice === "Accept all and end") { await manager.acceptAll(); await manager.end(true); }
+      else if (choice === "Reject all and end") { await manager.rejectAll(); await manager.end(true); }
+      else if (choice === "Keep recovery snapshot") { await manager.end(false); }
+    } else { await manager.end(true); }
+  };
   const commands: [string, (...args: any[]) => any][] = [
+    ["aiChangeReview.toggleSession", () => manager.active ? endSession().catch(showError) : manager.start().catch(showError)],
     ["aiChangeReview.startSession", () => manager.start().catch(showError)],
     ["aiChangeReview.refresh", () => manager.reconcile().catch(showError)],
     ["aiChangeReview.openReview", () => { if (!manager.active) { return manager.start().catch(showError); } return vscode.commands.executeCommand("workbench.view.extension.aiChangeReview"); }],
@@ -62,16 +73,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       void vscode.window.showInformationMessage(next ? "AI Change Review will keep tracking this workspace across restarts." : "AI Change Review always-on tracking is disabled for this workspace.");
       if (next && !manager.active) { await manager.start(); }
     }],
-    ["aiChangeReview.endSession", async () => {
-      if (!manager.active) { return; }
-      const pending = manager.records().length;
-      if (pending) {
-        const choice = await vscode.window.showWarningMessage(`${pending} pending file${pending === 1 ? "" : "s"} remain.`, "Accept all and end", "Reject all and end", "Keep recovery snapshot", "Cancel");
-        if (choice === "Accept all and end") { await manager.acceptAll(); await manager.end(true); }
-        else if (choice === "Reject all and end") { await manager.rejectAll(); await manager.end(true); }
-        else if (choice === "Keep recovery snapshot") { await manager.end(false); }
-      } else { await manager.end(true); }
-    }]
+    ["aiChangeReview.endSession", () => endSession().catch(showError)]
   ];
   const currentProvider: vscode.TextDocumentContentProvider = { provideTextDocumentContent: () => "" };
   context.subscriptions.push(output, manager, status, decorations, vscode.workspace.registerTextDocumentContentProvider("ai-change-review-baseline", provider), vscode.workspace.registerTextDocumentContentProvider("ai-change-review-current", currentProvider), vscode.languages.registerCodeLensProvider([{ scheme: "file" }, { scheme: "vscode-remote" }, { scheme: "ai-change-review-current" }], codeLens), vscode.window.registerTreeDataProvider("aiChangeReview.changes", tree), ...commands.map(([id, handler]) => vscode.commands.registerCommand(id, handler)));

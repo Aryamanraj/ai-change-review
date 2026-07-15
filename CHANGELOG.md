@@ -2,6 +2,10 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.1.5 — 2026-07-15
+
+- Add a single sidebar power control to start or end a review session.
+
 ## 0.1.4 — 2026-07-15
 
 - Align the extension publisher identifier with the registered Visual Studio Marketplace publisher.

@@ -2,7 +2,7 @@
   "name": "ai-change-review",
   "displayName": "AI Change Review",
   "description": "Review, keep, or undo AI-generated workspace changes in VS Code.",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "publisher": "AryamanRaj",
   "license": "MIT",
   "repository": {
@@ -34,7 +34,7 @@
     "watch": "npm run compile -- --watch",
     "lint": "tsc --noEmit",
     "test": "npm run lint",
-    "package": "vsce package --out ai-change-review-0.1.4.vsix",
+    "package": "vsce package --out ai-change-review-0.1.5.vsix",
     "prepublishOnly": "npm run compile"
   },
   "devDependencies": {
@@ -46,6 +46,12 @@
   },
   "contributes": {
     "commands": [
+      {
+        "command": "aiChangeReview.toggleSession",
+        "title": "AI Change Review: Toggle Session",
+        "shortTitle": "Toggle",
+        "icon": "$(power)"
+      },
       {
         "command": "aiChangeReview.startSession",
         "title": "AI Change Review: Start Session",
@@ -164,9 +170,9 @@
     "menus": {
       "view/title": [
         {
-          "command": "aiChangeReview.startSession",
-          "when": "view == aiChangeReview.changes && !aiChangeReviewActive",
-          "group": "navigation@1"
+          "command": "aiChangeReview.toggleSession",
+          "when": "view == aiChangeReview.changes",
+          "group": "navigation@0"
         },
         {
           "command": "aiChangeReview.refresh",
