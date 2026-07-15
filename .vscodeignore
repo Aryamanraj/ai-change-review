@@ -1,0 +1,11 @@
+.gitignore
+IDEA.md
+AGENT_REVIEW_TEST_NOTES.md
+agent-review-demo.ts
+.github/**
+src/**
+tsconfig.json
+node_modules/**
+.vscode/**
+*.vsix
+**/*.map

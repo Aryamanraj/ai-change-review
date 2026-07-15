@@ -1,0 +1,204 @@
+{
+  "name": "ai-change-review",
+  "displayName": "AI Change Review",
+  "description": "Review, keep, or undo AI-generated workspace changes in VS Code.",
+  "version": "0.1.0",
+  "publisher": "aryamanraj",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Aryamanraj/ai-change-review.git"
+  },
+  "bugs": { "url": "https://github.com/Aryamanraj/ai-change-review/issues" },
+  "homepage": "https://github.com/Aryamanraj/ai-change-review#readme",
+  "icon": "media/icon.png",
+  "keywords": ["ai", "code review", "change review", "agent", "codex", "claude code", "copilot", "diff", "accept reject", "workspace changes"],
+  "engines": {
+    "vscode": "^1.100.0"
+  },
+  "categories": [
+    "Other",
+    "Programming Languages"
+  ],
+  "main": "./dist/extension.js",
+  "extensionKind": [
+    "workspace"
+  ],
+  "activationEvents": [
+    "onCommand:aiChangeReview.startSession",
+    "onView:aiChangeReview.changes",
+    "onStartupFinished"
+  ],
+  "scripts": {
+    "compile": "esbuild src/extension.ts --bundle --platform=node --format=cjs --outfile=dist/extension.js --external:vscode --sourcemap",
+    "watch": "npm run compile -- --watch",
+    "lint": "tsc --noEmit",
+    "test": "npm run lint",
+    "package": "vsce package --out ai-change-review-0.1.0.vsix",
+    "prepublishOnly": "npm run compile"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.3",
+    "@types/vscode": "^1.100.0",
+    "@vscode/vsce": "^3.9.2",
+    "esbuild": "^0.25.4",
+    "typescript": "^5.8.3"
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "aiChangeReview.startSession",
+        "title": "AI Change Review: Start Session",
+        "shortTitle": "Start",
+        "icon": "$(play)"
+      },
+      {
+        "command": "aiChangeReview.endSession",
+        "title": "AI Change Review: End Session",
+        "shortTitle": "End",
+        "icon": "$(stop)"
+      },
+      {
+        "command": "aiChangeReview.openReview",
+        "title": "AI Change Review: Open Review"
+      },
+      {
+        "command": "aiChangeReview.openFileDiff",
+        "title": "AI Change Review: Open File Diff"
+      },
+      {
+        "command": "aiChangeReview.acceptFile",
+        "title": "AI Change Review: Accept File"
+      },
+      {
+        "command": "aiChangeReview.rejectFile",
+        "title": "AI Change Review: Reject File"
+      },
+      {
+        "command": "aiChangeReview.acceptHunk",
+        "title": "AI Change Review: Accept Change"
+      },
+      {
+        "command": "aiChangeReview.rejectHunk",
+        "title": "AI Change Review: Reject Change"
+      },
+      {
+        "command": "aiChangeReview.acceptAll",
+        "title": "AI Change Review: Accept All"
+      },
+      {
+        "command": "aiChangeReview.rejectAll",
+        "title": "AI Change Review: Reject All"
+      },
+      {
+        "command": "aiChangeReview.refresh",
+        "title": "AI Change Review: Refresh Changes",
+        "shortTitle": "Refresh",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "aiChangeReview.toggleAlwaysOn",
+        "title": "AI Change Review: Toggle Always-On Tracking",
+        "shortTitle": "Always On",
+        "icon": "$(sync)"
+      },
+      {
+        "command": "aiChangeReview.clearAccepted",
+        "title": "AI Change Review: Clear Accepted Files",
+        "shortTitle": "Clear Accepted",
+        "icon": "$(clear-all)"
+      }
+    ],
+    "configuration": {
+      "title": "AI Change Review",
+      "properties": {
+        "aiChangeReview.maxFileSizeBytes": {
+          "type": "number",
+          "default": 5242880,
+          "minimum": 1,
+          "description": "Maximum size of a file snapshot in bytes."
+        },
+        "aiChangeReview.exclude": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "description": "Additional path fragments to exclude from review sessions."
+        },
+        "aiChangeReview.reconcileIntervalMs": {
+          "type": "number",
+          "default": 5000,
+          "minimum": 1000,
+          "description": "How often AI Change Review reconciles workspace changes."
+        },
+        "aiChangeReview.alwaysOn": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically recover an existing session, or start a new one, whenever this workspace opens."
+        },
+        "aiChangeReview.inlineDiff": {
+          "type": "boolean",
+          "default": true,
+          "description": "Open AI Change Review diffs as a single inline editor rather than a side-by-side comparison."
+        }
+      }
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "aiChangeReview",
+          "title": "AI Change Review",
+          "icon": "media/ai-change-review.svg"
+        }
+      ]
+    },
+    "views": {
+      "aiChangeReview": [
+        {
+          "id": "aiChangeReview.changes",
+          "name": "Pending Changes"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "aiChangeReview.startSession",
+          "when": "view == aiChangeReview.changes && !aiChangeReviewActive",
+          "group": "navigation@1"
+        },
+        {
+          "command": "aiChangeReview.refresh",
+          "when": "view == aiChangeReview.changes && aiChangeReviewActive",
+          "group": "navigation@1"
+        },
+        {
+          "command": "aiChangeReview.toggleAlwaysOn",
+          "when": "view == aiChangeReview.changes",
+          "group": "navigation@2"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "aiChangeReview.openFileDiff",
+          "when": "view == aiChangeReview.changes && viewItem == aiChangeReviewFile",
+          "group": "inline@1"
+        },
+        {
+          "command": "aiChangeReview.acceptFile",
+          "when": "view == aiChangeReview.changes && viewItem == aiChangeReviewFile",
+          "group": "inline@2"
+        },
+        {
+          "command": "aiChangeReview.rejectFile",
+          "when": "view == aiChangeReview.changes && viewItem == aiChangeReviewFile",
+          "group": "inline@3"
+        }
+      ]
+    }
+  },
+  "dependencies": {
+    "diff": "^9.0.0"
+  }
+}
