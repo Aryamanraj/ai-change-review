@@ -2,8 +2,8 @@
   "name": "ai-change-review",
   "displayName": "AI Change Review",
   "description": "Review, keep, or undo AI-generated workspace changes in VS Code.",
-  "version": "0.1.3",
-  "publisher": "aryamanraj",
+  "version": "0.1.4",
+  "publisher": "AryamanRaj",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -34,7 +34,7 @@
     "watch": "npm run compile -- --watch",
     "lint": "tsc --noEmit",
     "test": "npm run lint",
-    "package": "vsce package --out ai-change-review-0.1.3.vsix",
+    "package": "vsce package --out ai-change-review-0.1.4.vsix",
     "prepublishOnly": "npm run compile"
   },
   "devDependencies": {

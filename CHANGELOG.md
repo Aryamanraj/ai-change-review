@@ -2,6 +2,10 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.1.4 — 2026-07-15
+
+- Align the extension publisher identifier with the registered Visual Studio Marketplace publisher.
+
 ## 0.1.3 — 2026-07-15
 
 - Ship PNG-only artwork to satisfy Visual Studio Marketplace publishing requirements.
