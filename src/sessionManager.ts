@@ -18,6 +18,14 @@ export class SessionManager implements vscode.Disposable {
   get active(): boolean { return Boolean(this.session); }
   get current(): ReviewSession | undefined { return this.session; }
   records(): FileRecord[] { return Object.values(this.session?.files ?? {}).filter(r => r.changeType); }
+  nextPendingRecord(currentUri: string): FileRecord | undefined {
+    const pending = this.records().sort((left, right) => left.label.localeCompare(right.label));
+    const sameFile = pending.find(record => record.uri === currentUri);
+    if (sameFile) { return sameFile; }
+    const current = this.record(currentUri);
+    if (!current) { return pending[0]; }
+    return pending.find(record => record.label.localeCompare(current.label) > 0) ?? pending[0];
+  }
   visibleRecords(): FileRecord[] { return Object.values(this.session?.files ?? {}).filter(r => r.changeType || r.acceptedFile || r.acceptedHunks?.length); }
   get acceptedCount(): number { return Object.values(this.session?.files ?? {}).filter(r => !r.changeType && (r.acceptedFile || r.acceptedHunks?.length)).length; }
   pendingStats(): { files: number; added: number; removed: number } {

@@ -2,6 +2,11 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.1.2 — 2026-07-15
+
+- Make kept hunks render as normal code in the review editor.
+- Advance automatically to the next pending hunk, including in another file.
+
 ## 0.1.1 — 2026-07-15
 
 - Replace the generic Activity Bar icon with a dedicated AI change-review mark.
