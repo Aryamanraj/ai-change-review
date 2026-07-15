@@ -14,6 +14,7 @@ export class SessionManager implements vscode.Disposable {
   private timer: NodeJS.Timeout | undefined;
   private reconciling = false;
   private mutating = false;
+  private branchPromptOpen = false;
   constructor(private readonly store: SnapshotStore, private readonly output: vscode.OutputChannel) {}
   get active(): boolean { return Boolean(this.session); }
   get current(): ReviewSession | undefined { return this.session; }
@@ -72,7 +73,7 @@ export class SessionManager implements vscode.Disposable {
         } catch (error) { this.output.appendLine(`Could not snapshot ${uri.toString()}: ${String(error)}`); }
       }
     });
-    this.session = { id: randomUUID(), createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), workspaceFolders: folders.map(f => f.uri.toString()), files };
+    this.session = { id: randomUUID(), createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), workspaceFolders: folders.map(f => f.uri.toString()), files, gitHead: await this.gitHead(folders[0].uri) };
     await this.persist();
     this.installObservers();
     this.changes.fire();
@@ -100,6 +101,8 @@ export class SessionManager implements vscode.Disposable {
     if (!this.session || this.reconciling || this.mutating) { return; }
     this.reconciling = true;
     try {
+      await this.detectBranchChange();
+      if (!this.session) { return; }
       const seen = new Set<string>();
       for (const uri of await vscode.workspace.findFiles("**/*")) {
         if (this.excluded(uri)) { continue; }
@@ -127,6 +130,36 @@ export class SessionManager implements vscode.Disposable {
       }
       await this.persist(); this.changes.fire();
     } finally { this.reconciling = false; }
+  }
+  async resetBaseline(): Promise<void> {
+    if (!this.session) { return this.start(); }
+    this.stopObservers();
+    this.session = undefined;
+    await this.store.clear();
+    await this.start();
+    void vscode.window.showInformationMessage("AI Change Review baseline reset for the current Git branch.");
+  }
+  private async gitHead(root: vscode.Uri): Promise<string | undefined> {
+    try {
+      const dotGit = vscode.Uri.joinPath(root, ".git");
+      const stat = await vscode.workspace.fs.stat(dotGit);
+      if (stat.type !== vscode.FileType.Directory) { return undefined; }
+      return new TextDecoder().decode(await vscode.workspace.fs.readFile(vscode.Uri.joinPath(dotGit, "HEAD"))).trim();
+    } catch { return undefined; }
+  }
+  private async detectBranchChange(): Promise<void> {
+    if (!this.session || this.branchPromptOpen || this.session.workspaceFolders.length !== 1) { return; }
+    const current = await this.gitHead(vscode.Uri.parse(this.session.workspaceFolders[0]));
+    if (!current) { return; }
+    if (!this.session.gitHead) { this.session.gitHead = current; await this.persist(); return; }
+    if (current === this.session.gitHead) { return; }
+    this.branchPromptOpen = true;
+    try {
+      const choice = await vscode.window.showWarningMessage("Git branch changed. Reset the AI Change Review baseline for this branch?", "Reset baseline", "Keep reviewing old baseline");
+      if (!this.session) { return; }
+      if (choice === "Reset baseline") { await this.resetBaseline(); }
+      else if (choice === "Keep reviewing old baseline") { this.session.gitHead = current; await this.persist(); }
+    } finally { this.branchPromptOpen = false; }
   }
   private async persist(): Promise<void> { if (this.session) { this.session.updatedAt = new Date().toISOString(); await this.store.save(this.session); } }
   private async withMutation(action: () => Promise<void>): Promise<void> { this.mutating = true; try { await action(); } finally { this.mutating = false; await this.reconcile(); } }

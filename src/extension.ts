@@ -52,6 +52,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     ["aiChangeReview.toggleSession", () => manager.active ? endSession().catch(showError) : manager.start().catch(showError)],
     ["aiChangeReview.startSession", () => manager.start().catch(showError)],
     ["aiChangeReview.refresh", () => manager.reconcile().catch(showError)],
+    ["aiChangeReview.resetBaseline", () => manager.resetBaseline().catch(showError)],
     ["aiChangeReview.openReview", () => { if (!manager.active) { return manager.start().catch(showError); } return vscode.commands.executeCommand("workbench.view.extension.aiChangeReview"); }],
     ["aiChangeReview.openFileDiff", async (uri?: unknown) => {
       const record = fileArg(uri);

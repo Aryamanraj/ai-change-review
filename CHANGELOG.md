@@ -2,6 +2,17 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.1.7 — 2026-07-16
+
+- Detect Git branch changes and offer a safe review-baseline reset.
+- Add a visible manual reset-baseline action.
+
+## 0.1.6 — 2026-07-16
+
+- Advance to the next pending change after keeping a hunk or file.
+- Render completed review files as final code without review controls.
+- Make the tracking on/off action visible in the Session actions list.
+
 ## 0.1.5 — 2026-07-15
 
 - Add a single sidebar power control to start or end a review session.

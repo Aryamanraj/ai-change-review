@@ -46,6 +46,7 @@ Opening the real file in VS Code also provides a lightweight review mode: pendin
 - Renames are displayed as a deletion and a creation.
 - Binary and oversized files support file-level decisions only.
 - The extension tracks every included saved workspace change; it cannot attribute an edit to a particular agent, formatter, or person.
+- When it detects a Git branch checkout, it offers to reset the review baseline so branch changes are not mistaken for reviewable edits.
 
 ## Install
 

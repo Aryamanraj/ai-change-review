@@ -33,6 +33,8 @@ export interface ReviewSession {
   updatedAt: string;
   workspaceFolders: string[];
   files: Record<string, FileRecord>;
+  /** The Git HEAD contents at baseline capture, when this is a local Git workspace. */
+  gitHead?: string;
 }
 
 export interface ReviewHunk {

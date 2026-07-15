@@ -9,7 +9,13 @@ export class ReviewTreeProvider implements vscode.TreeDataProvider<vscode.TreeIt
   getTreeItem(item: vscode.TreeItem): vscode.TreeItem { return item; }
   getChildren(element?: vscode.TreeItem): vscode.TreeItem[] {
     if (!element) {
-      if (!this.manager.active) { return [new vscode.TreeItem("Start a review session", vscode.TreeItemCollapsibleState.None)]; }
+      if (!this.manager.active) {
+        const start = new vscode.TreeItem("Turn tracking on", vscode.TreeItemCollapsibleState.None);
+        start.description = "AI Change Review is off";
+        start.iconPath = new vscode.ThemeIcon("power", new vscode.ThemeColor("testing.iconPassed"));
+        start.command = { command: "aiChangeReview.toggleSession", title: "Turn tracking on" };
+        return [start];
+      }
       const records = this.manager.visibleRecords();
       const actions = new vscode.TreeItem("Session actions", vscode.TreeItemCollapsibleState.Expanded);
       actions.contextValue = "aiChangeReviewActions";
@@ -38,13 +44,16 @@ export class ReviewTreeProvider implements vscode.TreeDataProvider<vscode.TreeIt
       return item;
     };
     const pending = this.manager.pendingStats();
-    const actions: vscode.TreeItem[] = [action("Refresh changes", "aiChangeReview.refresh", "refresh", "scan workspace now")];
+    const actions: vscode.TreeItem[] = [
+      action("Turn tracking off", "aiChangeReview.toggleSession", "power", "AI Change Review is on"),
+      action("Reset review baseline", "aiChangeReview.resetBaseline", "debug-restart", "treat current workspace as the new baseline"),
+      action("Refresh changes", "aiChangeReview.refresh", "refresh", "scan workspace now")
+    ];
     if (pending.files) {
       actions.push(action("Accept all changes", "aiChangeReview.acceptAll", "check-all", `${pending.files} files · +${pending.added} −${pending.removed}`));
       actions.push(action("Reject all changes", "aiChangeReview.rejectAll", "discard", "restore baseline"));
     }
     if (this.manager.acceptedCount) { actions.push(action("Clear accepted files", "aiChangeReview.clearAccepted", "clear-all", `${this.manager.acceptedCount} accepted`)); }
-    actions.push(action("End session", "aiChangeReview.endSession", "stop-circle", "keep or clear snapshot"));
     return actions;
   }
   private file(record: FileRecord): vscode.TreeItem {
