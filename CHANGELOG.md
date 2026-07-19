@@ -2,6 +2,18 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.1.10 — 2026-07-16
+
+- Add theme-aware syntax colors to the inline review editor.
+
+## 0.1.9 — 2026-07-16
+
+- Remove accepted files from the pending sidebar automatically.
+
+## 0.1.8 — 2026-07-16
+
+- Exclude files matched by root and nested `.gitignore` rules from review sessions.
+
 ## 0.1.7 — 2026-07-16
 
 - Detect Git branch changes and offer a safe review-baseline reset.

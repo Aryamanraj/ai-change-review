@@ -53,7 +53,6 @@ export class ReviewTreeProvider implements vscode.TreeDataProvider<vscode.TreeIt
       actions.push(action("Accept all changes", "aiChangeReview.acceptAll", "check-all", `${pending.files} files · +${pending.added} −${pending.removed}`));
       actions.push(action("Reject all changes", "aiChangeReview.rejectAll", "discard", "restore baseline"));
     }
-    if (this.manager.acceptedCount) { actions.push(action("Clear accepted files", "aiChangeReview.clearAccepted", "clear-all", `${this.manager.acceptedCount} accepted`)); }
     return actions;
   }
   private file(record: FileRecord): vscode.TreeItem {

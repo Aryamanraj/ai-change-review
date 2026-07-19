@@ -66,7 +66,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     ["aiChangeReview.rejectHunk", (uri?: unknown, hunkId?: string) => { const r = fileArg(uri); return r && hunkId ? manager.rejectHunk(r, hunkId).catch(showError) : undefined; }],
     ["aiChangeReview.acceptAll", () => manager.acceptAll().catch(showError)],
     ["aiChangeReview.rejectAll", () => manager.rejectAll().catch(showError)],
-    ["aiChangeReview.clearAccepted", () => manager.clearAccepted().catch(showError)],
     ["aiChangeReview.toggleAlwaysOn", async () => {
       const configuration = vscode.workspace.getConfiguration("aiChangeReview");
       const next = !configuration.get<boolean>("alwaysOn", false);

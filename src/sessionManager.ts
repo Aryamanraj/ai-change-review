@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import { randomUUID } from "crypto";
 import { applyPatch, diffLines, reversePatch, structuredPatch, StructuredPatch, StructuredPatchHunk } from "diff";
+import ignore = require("ignore");
 import { SnapshotStore, hashBytes } from "./snapshotStore";
 import { AcceptedHunk, ChangeType, FileKind, FileRecord, ReviewHunk, ReviewSession } from "./types";
 
@@ -15,6 +16,7 @@ export class SessionManager implements vscode.Disposable {
   private reconciling = false;
   private mutating = false;
   private branchPromptOpen = false;
+  private readonly gitIgnoreCache = new Map<string, ignore.Ignore | undefined>();
   constructor(private readonly store: SnapshotStore, private readonly output: vscode.OutputChannel) {}
   get active(): boolean { return Boolean(this.session); }
   get current(): ReviewSession | undefined { return this.session; }
@@ -27,16 +29,46 @@ export class SessionManager implements vscode.Disposable {
     if (!current) { return pending[0]; }
     return pending.find(record => record.label.localeCompare(current.label) > 0) ?? pending[0];
   }
-  visibleRecords(): FileRecord[] { return Object.values(this.session?.files ?? {}).filter(r => r.changeType || r.acceptedFile || r.acceptedHunks?.length); }
-  get acceptedCount(): number { return Object.values(this.session?.files ?? {}).filter(r => !r.changeType && (r.acceptedFile || r.acceptedHunks?.length)).length; }
+  /** The sidebar is an inbox: only changes that still require a decision belong here. */
+  visibleRecords(): FileRecord[] { return this.records(); }
   pendingStats(): { files: number; added: number; removed: number } {
     return this.records().reduce((total, record) => ({ files: total.files + 1, added: total.added + (record.addedLines ?? 0), removed: total.removed + (record.removedLines ?? 0) }), { files: 0, added: 0, removed: 0 });
   }
   record(uri: string): FileRecord | undefined { return this.session?.files[uri]; }
-  private excluded(uri: vscode.Uri): boolean {
+  private excludedByConfig(uri: vscode.Uri): boolean {
     const path = uri.path;
     const custom = vscode.workspace.getConfiguration("aiChangeReview").get<string[]>("exclude", []);
     return DEFAULT_EXCLUDED.some(part => path.includes(part)) || custom.some(part => path.includes(part.replaceAll("**/", "").replaceAll("/**", "")));
+  }
+  private async excluded(uri: vscode.Uri): Promise<boolean> {
+    if (this.excludedByConfig(uri)) { return true; }
+    const folder = vscode.workspace.getWorkspaceFolder(uri);
+    if (!folder) { return false; }
+    const relative = vscode.workspace.asRelativePath(uri, false).replace(/^\/+/, "");
+    const parts = relative.split("/");
+    // Each .gitignore applies to files below its own directory. Check the root
+    // first, then every ancestor that can contain a nested .gitignore.
+    for (let depth = 0; depth < parts.length; depth++) {
+      const directory = depth ? vscode.Uri.joinPath(folder.uri, ...parts.slice(0, depth)) : folder.uri;
+      const rules = await this.gitIgnore(directory);
+      if (!rules) { continue; }
+      const candidate = parts.slice(depth).join("/");
+      if (candidate && rules.ignores(candidate)) { return true; }
+    }
+    return false;
+  }
+  private async gitIgnore(directory: vscode.Uri): Promise<ignore.Ignore | undefined> {
+    const key = directory.toString();
+    if (this.gitIgnoreCache.has(key)) { return this.gitIgnoreCache.get(key); }
+    try {
+      const contents = new TextDecoder().decode(await vscode.workspace.fs.readFile(vscode.Uri.joinPath(directory, ".gitignore")));
+      const rules = ignore().add(contents);
+      this.gitIgnoreCache.set(key, rules);
+      return rules;
+    } catch {
+      this.gitIgnoreCache.set(key, undefined);
+      return undefined;
+    }
   }
   private kind(bytes: Uint8Array): FileKind {
     const max = vscode.workspace.getConfiguration("aiChangeReview").get<number>("maxFileSizeBytes", 5 * 1024 * 1024);
@@ -57,12 +89,13 @@ export class SessionManager implements vscode.Disposable {
     const folders = vscode.workspace.workspaceFolders;
     if (!folders?.length) { void vscode.window.showErrorMessage("Open a folder or workspace before starting AI Change Review."); return; }
     const files: Record<string, FileRecord> = {};
+    this.gitIgnoreCache.clear();
     await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: "AI Change Review: capturing workspace baseline…", cancellable: true }, async (progress, token) => {
       const uris = await vscode.workspace.findFiles("**/*");
       let count = 0;
       for (const uri of uris) {
         if (token.isCancellationRequested) { throw new Error("Baseline capture cancelled."); }
-        if (this.excluded(uri)) { continue; }
+        if (await this.excluded(uri)) { continue; }
         try {
           const bytes = await vscode.workspace.fs.readFile(uri);
           const record: FileRecord = { uri: uri.toString(), label: vscode.workspace.asRelativePath(uri, false), baselineExists: true, kind: this.kind(bytes) };
@@ -101,11 +134,12 @@ export class SessionManager implements vscode.Disposable {
     if (!this.session || this.reconciling || this.mutating) { return; }
     this.reconciling = true;
     try {
+      this.gitIgnoreCache.clear();
       await this.detectBranchChange();
       if (!this.session) { return; }
       const seen = new Set<string>();
       for (const uri of await vscode.workspace.findFiles("**/*")) {
-        if (this.excluded(uri)) { continue; }
+        if (await this.excluded(uri)) { continue; }
         const id = uri.toString(); seen.add(id);
         let record = this.session.files[id];
         try {
@@ -123,6 +157,10 @@ export class SessionManager implements vscode.Disposable {
         } catch { /* inaccessible files are ignored until a later pass */ }
       }
       for (const record of Object.values(this.session.files)) {
+        if (await this.excluded(vscode.Uri.parse(record.uri))) {
+          delete this.session.files[record.uri];
+          continue;
+        }
         if (record.baselineExists && !seen.has(record.uri)) {
           record.changeType = "deleted"; record.currentHash = undefined;
           Object.assign(record, this.stats(await this.store.readBaseline(record), undefined, record.kind));
@@ -197,14 +235,6 @@ export class SessionManager implements vscode.Disposable {
   }
   async acceptAll(): Promise<void> { for (const record of [...this.records()]) { await this.accept(record); } }
   async rejectAll(): Promise<void> { for (const record of [...this.records()]) { await this.reject(record); } }
-  async clearAccepted(): Promise<void> {
-    if (!this.session) { return; }
-    for (const record of Object.values(this.session.files)) {
-      if (!record.changeType) { record.acceptedFile = undefined; record.acceptedHunks = undefined; }
-    }
-    await this.persist();
-    this.changes.fire();
-  }
   async hunks(record: FileRecord): Promise<ReviewHunk[]> {
     if (record.kind !== "text" || !record.changeType || record.changeType === "deleted") { return []; }
     const baseline = await this.store.readBaseline(record);

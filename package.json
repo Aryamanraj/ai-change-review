@@ -2,7 +2,7 @@
   "name": "ai-change-review",
   "displayName": "AI Change Review",
   "description": "Review, keep, or undo AI-generated workspace changes in VS Code.",
-  "version": "0.1.7",
+  "version": "0.1.10",
   "publisher": "AryamanRaj",
   "license": "MIT",
   "repository": {
@@ -34,7 +34,7 @@
     "watch": "npm run compile -- --watch",
     "lint": "tsc --noEmit",
     "test": "npm run lint",
-    "package": "vsce package --out ai-change-review-0.1.7.vsix",
+    "package": "vsce package --out ai-change-review-0.1.10.vsix",
     "prepublishOnly": "npm run compile"
   },
   "devDependencies": {
@@ -113,12 +113,6 @@
         "title": "AI Change Review: Toggle Always-On Tracking",
         "shortTitle": "Always On",
         "icon": "$(sync)"
-      },
-      {
-        "command": "aiChangeReview.clearAccepted",
-        "title": "AI Change Review: Clear Accepted Files",
-        "shortTitle": "Clear Accepted",
-        "icon": "$(clear-all)"
       }
     ],
     "configuration": {
@@ -211,6 +205,7 @@
     }
   },
   "dependencies": {
-    "diff": "^9.0.0"
+    "diff": "^9.0.0",
+    "ignore": "^7.0.3"
   }
 }

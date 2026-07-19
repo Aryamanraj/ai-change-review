@@ -32,7 +32,7 @@ AI Change Review tracks *all included saved workspace changes* while a session i
 
 AI Change Review uses a dedicated unified review editor: code blocks are rendered as inline additions/removals with a **Keep**/**Undo** bar directly above each block. Use **Open current file** to leave review mode and open the normal VS Code editor.
 
-When a file has several separate changes, use the **↑** and **↓** controls in the header or beside a block to move between them. Keeping a block preserves it in the review view and marks it **✓ Kept**; it remains visible in the Modified group until the session ends.
+When a file has several separate changes, use the **↑** and **↓** controls in the header or beside a block to move between them. Keeping a block advances to the next pending change. Once a file has no pending changes, it leaves the sidebar automatically and remains as final code in the open review editor.
 
 Opening the real file in VS Code also provides a lightweight review mode: pending additions are highlighted in green, removals have red gutter markers, and native **Accept Change** / **Reject Change** CodeLens actions appear above each hunk.
 
