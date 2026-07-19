@@ -2,6 +2,10 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.1.11 — 2026-07-20
+
+- Show the pending-file count as an Activity Bar badge.
+
 ## 0.1.10 — 2026-07-16
 
 - Add theme-aware syntax colors to the inline review editor.

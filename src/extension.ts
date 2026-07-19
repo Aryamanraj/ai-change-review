@@ -14,12 +14,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const manager = new SessionManager(store, output);
   const provider = new BaselineProvider(store, uri => manager.record(uri));
   const tree = new ReviewTreeProvider(manager);
+  const treeView = vscode.window.createTreeView("aiChangeReview.changes", { treeDataProvider: tree });
   const codeLens = new ReviewCodeLensProvider(manager);
   const decorations = new DecorationController(manager);
   const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
   status.command = "aiChangeReview.openReview";
   const refreshStatus = () => {
     const pending = manager.pendingStats();
+    treeView.badge = pending.files
+      ? { value: pending.files, tooltip: `${pending.files} file${pending.files === 1 ? "" : "s"} pending review` }
+      : undefined;
     status.text = manager.active ? `$(diff) AI Change Review: ${pending.files} file${pending.files === 1 ? "" : "s"} · $(add) ${pending.added} $(remove) ${pending.removed}` : "$(eye) AI Change Review: OFF";
     status.tooltip = manager.active ? "Open pending AI Change Review changes" : "Start AI Change Review";
     status.show();
@@ -76,7 +80,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     ["aiChangeReview.endSession", () => endSession().catch(showError)]
   ];
   const currentProvider: vscode.TextDocumentContentProvider = { provideTextDocumentContent: () => "" };
-  context.subscriptions.push(output, manager, status, decorations, vscode.workspace.registerTextDocumentContentProvider("ai-change-review-baseline", provider), vscode.workspace.registerTextDocumentContentProvider("ai-change-review-current", currentProvider), vscode.languages.registerCodeLensProvider([{ scheme: "file" }, { scheme: "vscode-remote" }, { scheme: "ai-change-review-current" }], codeLens), vscode.window.registerTreeDataProvider("aiChangeReview.changes", tree), ...commands.map(([id, handler]) => vscode.commands.registerCommand(id, handler)));
+  context.subscriptions.push(output, manager, status, decorations, treeView, vscode.workspace.registerTextDocumentContentProvider("ai-change-review-baseline", provider), vscode.workspace.registerTextDocumentContentProvider("ai-change-review-current", currentProvider), vscode.languages.registerCodeLensProvider([{ scheme: "file" }, { scheme: "vscode-remote" }, { scheme: "ai-change-review-current" }], codeLens), ...commands.map(([id, handler]) => vscode.commands.registerCommand(id, handler)));
   const saved = await store.load();
   const alwaysOn = vscode.workspace.getConfiguration("aiChangeReview").get<boolean>("alwaysOn", false);
   if (saved && alwaysOn) { await manager.recover(); }
