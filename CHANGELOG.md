@@ -2,6 +2,20 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.1.14 — 2026-07-20
+
+- Make the native, theme-aware VS Code editor the default review surface for created and modified files.
+- Open at the current change and advance to the next pending hunk or file after Keep or Undo.
+- Keep the dedicated review page only for deleted files, which have no current editor document.
+
+## 0.1.13 — 2026-07-20
+
+- Restore the dedicated unified review layout with inline added/removed code and Keep/Undo toolbars.
+
+## 0.1.12 — 2026-07-20
+
+- Use the native, theme-aware VS Code editor for review, with semantic syntax highlighting and inline Keep/Undo controls.
+
 ## 0.1.11 — 2026-07-20
 
 - Show the pending-file count as an Activity Bar badge.

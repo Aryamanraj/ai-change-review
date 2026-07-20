@@ -20,17 +20,16 @@ export class ReviewCodeLensProvider implements vscode.CodeLensProvider {
         const line = Math.min(hunk.currentStart, Math.max(0, document.lineCount - 1));
         const range = new vscode.Range(line, 0, line, 0);
         return [
-          new vscode.CodeLens(range, { title: "$(check) Accept Change", tooltip: "Keep only this change", command: "aiChangeReview.acceptHunk", arguments: [record.uri, hunk.id] }),
-          new vscode.CodeLens(range, { title: "$(discard) Reject Change", tooltip: "Undo only this change", command: "aiChangeReview.rejectHunk", arguments: [record.uri, hunk.id] })
+          new vscode.CodeLens(range, { title: "$(check) Keep", tooltip: "Keep only this change", command: "aiChangeReview.acceptHunk", arguments: [record.uri, hunk.id] }),
+          new vscode.CodeLens(range, { title: "$(discard) Undo", tooltip: "Undo only this change", command: "aiChangeReview.rejectHunk", arguments: [record.uri, hunk.id] })
         ];
       });
     });
   }
   private fileLenses(record: { uri: string }, range: vscode.Range): vscode.CodeLens[] {
     return [
-      new vscode.CodeLens(range, { title: "$(check) Accept File", tooltip: "Keep this file’s changes", command: "aiChangeReview.acceptFile", arguments: [record.uri] }),
-      new vscode.CodeLens(range, { title: "$(discard) Reject File", tooltip: "Restore this file to its session baseline", command: "aiChangeReview.rejectFile", arguments: [record.uri] }),
-      new vscode.CodeLens(range, { title: "$(diff) Open Review Diff", command: "aiChangeReview.openFileDiff", arguments: [record.uri] })
+      new vscode.CodeLens(range, { title: "$(check) Keep file", tooltip: "Keep this file’s changes", command: "aiChangeReview.acceptFile", arguments: [record.uri] }),
+      new vscode.CodeLens(range, { title: "$(discard) Undo file", tooltip: "Restore this file to its session baseline", command: "aiChangeReview.rejectFile", arguments: [record.uri] })
     ];
   }
 }

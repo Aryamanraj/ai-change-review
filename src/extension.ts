@@ -42,6 +42,52 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     return undefined;
   };
   const showError = (error: unknown) => { output.appendLine(String(error)); void vscode.window.showErrorMessage(`AI Change Review: ${error instanceof Error ? error.message : String(error)}`); };
+  type ReviewTarget = { record: FileRecord; hunkId?: string };
+  const pendingTargets = async (): Promise<ReviewTarget[]> => {
+    const targets: ReviewTarget[] = [];
+    for (const record of manager.records()) {
+      if (record.kind !== "text") {
+        targets.push({ record });
+        continue;
+      }
+      const hunks = await manager.hunks(record);
+      if (hunks.length) { targets.push(...hunks.map(hunk => ({ record, hunkId: hunk.id }))); }
+      else { targets.push({ record }); }
+    }
+    return targets;
+  };
+  const openNativeReview = async (target: ReviewTarget): Promise<void> => {
+    const { record, hunkId } = target;
+    if (record.changeType === "deleted" || record.kind !== "text") {
+      ReviewPanel.open(manager, record);
+      return;
+    }
+    try {
+      const document = await vscode.workspace.openTextDocument(vscode.Uri.parse(record.uri));
+      const editor = await vscode.window.showTextDocument(document, { preview: false, preserveFocus: false });
+      const hunks = await manager.hunks(record);
+      const hunk = hunks.find(item => item.id === hunkId) ?? hunks[0];
+      if (hunk) {
+        const line = Math.min(hunk.currentStart, Math.max(0, document.lineCount - 1));
+        const range = new vscode.Range(line, 0, line, 0);
+        editor.selection = new vscode.Selection(range.start, range.end);
+        editor.revealRange(range, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+      }
+    } catch (error) {
+      output.appendLine(`Could not open native review for ${record.label}: ${String(error)}`);
+      ReviewPanel.open(manager, record);
+    }
+  };
+  const advanceAfter = async (before: ReviewTarget[], current: ReviewTarget): Promise<void> => {
+    const index = before.findIndex(target => target.record.uri === current.record.uri && target.hunkId === current.hunkId);
+    const remaining = await pendingTargets();
+    if (!remaining.length) { return; }
+    const findRemaining = (candidates: ReviewTarget[]) => candidates
+      .map(candidate => remaining.find(target => target.record.uri === candidate.record.uri && target.hunkId === candidate.hunkId))
+      .find((target): target is ReviewTarget => Boolean(target));
+    const next = findRemaining(index >= 0 ? before.slice(index + 1) : before) ?? remaining[0];
+    await openNativeReview(next);
+  };
   const endSession = async (): Promise<void> => {
     if (!manager.active) { return; }
     const pending = manager.records().length;
@@ -62,12 +108,24 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const record = fileArg(uri);
       if (!record) { return; }
       if (record.kind !== "text") { void vscode.window.showInformationMessage("Binary and large files support file-level acceptance or rejection only."); return; }
-      ReviewPanel.open(manager, record);
+      await openNativeReview({ record });
     }],
-    ["aiChangeReview.acceptFile", (uri?: unknown) => { const r = fileArg(uri); return r ? manager.accept(r).catch(showError) : undefined; }],
-    ["aiChangeReview.rejectFile", (uri?: unknown) => { const r = fileArg(uri); return r ? manager.reject(r).catch(showError) : undefined; }],
-    ["aiChangeReview.acceptHunk", (uri?: unknown, hunkId?: string) => { const r = fileArg(uri); return r && hunkId ? manager.acceptHunk(r, hunkId).catch(showError) : undefined; }],
-    ["aiChangeReview.rejectHunk", (uri?: unknown, hunkId?: string) => { const r = fileArg(uri); return r && hunkId ? manager.rejectHunk(r, hunkId).catch(showError) : undefined; }],
+    ["aiChangeReview.acceptFile", async (uri?: unknown) => {
+      const record = fileArg(uri); if (!record) { return; }
+      const before = await pendingTargets(); await manager.accept(record); await advanceAfter(before, { record });
+    }],
+    ["aiChangeReview.rejectFile", async (uri?: unknown) => {
+      const record = fileArg(uri); if (!record) { return; }
+      const before = await pendingTargets(); await manager.reject(record); await advanceAfter(before, { record });
+    }],
+    ["aiChangeReview.acceptHunk", async (uri?: unknown, hunkId?: string) => {
+      const record = fileArg(uri); if (!record || !hunkId) { return; }
+      const before = await pendingTargets(); await manager.acceptHunk(record, hunkId); await advanceAfter(before, { record, hunkId });
+    }],
+    ["aiChangeReview.rejectHunk", async (uri?: unknown, hunkId?: string) => {
+      const record = fileArg(uri); if (!record || !hunkId) { return; }
+      const before = await pendingTargets(); await manager.rejectHunk(record, hunkId); await advanceAfter(before, { record, hunkId });
+    }],
     ["aiChangeReview.acceptAll", () => manager.acceptAll().catch(showError)],
     ["aiChangeReview.rejectAll", () => manager.rejectAll().catch(showError)],
     ["aiChangeReview.toggleAlwaysOn", async () => {
