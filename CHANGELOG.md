@@ -2,6 +2,10 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.1.15 — 2026-08-21
+
+- Preserve review-panel scroll position during unchanged background reconciliations.
+
 ## 0.1.14 — 2026-07-20
 
 - Make the native, theme-aware VS Code editor the default review surface for created and modified files.
