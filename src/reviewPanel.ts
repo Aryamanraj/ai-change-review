@@ -10,6 +10,8 @@ const LITERALS = new Set("true false null undefined".split(" "));
 export class ReviewPanel implements vscode.Disposable {
   private readonly disposables: vscode.Disposable[] = [];
   private record: FileRecord;
+  /** Avoid replacing the webview on background reconciliations that changed nothing here. */
+  private contentKey: string | undefined;
 
   static open(manager: SessionManager, record: FileRecord): ReviewPanel {
     const panel = vscode.window.createWebviewPanel("aiChangeReview.review", `AI Change Review: ${record.label}`, vscode.ViewColumn.Active, {
@@ -64,11 +66,28 @@ export class ReviewPanel implements vscode.Disposable {
   private async render(): Promise<void> {
     const current = this.manager.record(this.record.uri);
     if (!current) {
-      this.panel.webview.html = this.html("", [], "Reviewed", this.record.label, 0, 0);
+      const key = "reviewed";
+      if (this.contentKey !== key) {
+        this.panel.webview.html = this.html("", [], "Reviewed", this.record.label, 0, 0);
+        this.contentKey = key;
+      }
       return;
     }
     this.record = current;
     const content = await this.manager.reviewContent(current);
+    // SessionManager emits after every periodic reconciliation, even when this
+    // file has not changed. Replacing the document resets its scroll position
+    // and the initial-focus script jumps back to the first hunk.
+    const key = JSON.stringify({
+      label: current.label,
+      changeType: current.changeType,
+      added: current.addedLines ?? 0,
+      removed: current.removedLines ?? 0,
+      current: content.current,
+      hunks: content.hunks
+    });
+    if (this.contentKey === key) { return; }
+    this.contentKey = key;
     this.panel.webview.html = this.html(content.current, content.hunks, this.title(current), current.label, current.addedLines ?? 0, current.removedLines ?? 0);
   }
 
