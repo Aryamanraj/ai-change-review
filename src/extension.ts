@@ -56,9 +56,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
     return targets;
   };
-  const openNativeReview = async (target: ReviewTarget): Promise<void> => {
+  const openReview = async (target: ReviewTarget): Promise<void> => {
     const { record, hunkId } = target;
-    if (record.changeType === "deleted" || record.kind !== "text") {
+    const inlineDiff = vscode.workspace.getConfiguration("aiChangeReview").get<boolean>("inlineDiff", true);
+    if (inlineDiff || record.changeType === "deleted" || record.kind !== "text") {
       ReviewPanel.open(manager, record);
       return;
     }
@@ -86,7 +87,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       .map(candidate => remaining.find(target => target.record.uri === candidate.record.uri && target.hunkId === candidate.hunkId))
       .find((target): target is ReviewTarget => Boolean(target));
     const next = findRemaining(index >= 0 ? before.slice(index + 1) : before) ?? remaining[0];
-    await openNativeReview(next);
+    await openReview(next);
   };
   const endSession = async (): Promise<void> => {
     if (!manager.active) { return; }
@@ -108,7 +109,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const record = fileArg(uri);
       if (!record) { return; }
       if (record.kind !== "text") { void vscode.window.showInformationMessage("Binary and large files support file-level acceptance or rejection only."); return; }
-      await openNativeReview({ record });
+      await openReview({ record });
     }],
     ["aiChangeReview.acceptFile", async (uri?: unknown) => {
       const record = fileArg(uri); if (!record) { return; }
