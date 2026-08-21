@@ -56,10 +56,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
     return targets;
   };
-  const openReview = async (target: ReviewTarget): Promise<void> => {
+  /** Native editor flow, used when reviewing from a normal workspace editor. */
+  const openNativeReview = async (target: ReviewTarget): Promise<void> => {
     const { record, hunkId } = target;
-    const inlineDiff = vscode.workspace.getConfiguration("aiChangeReview").get<boolean>("inlineDiff", true);
-    if (inlineDiff || record.changeType === "deleted" || record.kind !== "text") {
+    if (record.changeType === "deleted" || record.kind !== "text") {
       ReviewPanel.open(manager, record);
       return;
     }
@@ -87,7 +87,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       .map(candidate => remaining.find(target => target.record.uri === candidate.record.uri && target.hunkId === candidate.hunkId))
       .find((target): target is ReviewTarget => Boolean(target));
     const next = findRemaining(index >= 0 ? before.slice(index + 1) : before) ?? remaining[0];
-    await openReview(next);
+    await openNativeReview(next);
   };
   const endSession = async (): Promise<void> => {
     if (!manager.active) { return; }
@@ -109,7 +109,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const record = fileArg(uri);
       if (!record) { return; }
       if (record.kind !== "text") { void vscode.window.showInformationMessage("Binary and large files support file-level acceptance or rejection only."); return; }
-      await openReview({ record });
+      // Selecting an item in the AI Change Review sidebar is an explicit
+      // request for the richer review panel. Opening the workspace file via
+      // VS Code's normal UI continues to use the native editor.
+      ReviewPanel.open(manager, record);
     }],
     ["aiChangeReview.acceptFile", async (uri?: unknown) => {
       const record = fileArg(uri); if (!record) { return; }

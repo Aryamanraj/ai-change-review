@@ -29,7 +29,7 @@ Run **AI Change Review: Toggle Always-On Tracking** once for a workspace to keep
 
 AI Change Review tracks *all included saved workspace changes* while a session is active. It cannot determine whether a change was made by an agent, you, a formatter, or another process. Avoid unrelated edits during a session.
 
-AI Change Review opens pending files in a dedicated unified review panel with inline added/removed code, **Keep**/**Undo** controls, and change navigation. Set `aiChangeReview.inlineDiff` to `false` to use VS Code's native editor with theme-aware decorations and CodeLens controls instead.
+Open a file through VS Code's Explorer or editor to use the native, theme-aware editor with review decorations and CodeLens controls. Select a pending file from the AI Change Review sidebar to use the dedicated unified review panel with inline added/removed code, **Keep**/**Undo** controls, and change navigation.
 
 Keeping or undoing a block advances to the next pending change, including a change in another file. Once a file has no pending changes, it leaves the sidebar automatically and remains as final code in the editor.
 

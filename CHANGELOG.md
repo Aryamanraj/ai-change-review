@@ -2,6 +2,10 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.1.17 — 2026-08-21
+
+- Use the native editor for normal file opens and the unified review panel for sidebar selections.
+
 ## 0.1.16 — 2026-08-21
 
 - Restore the dedicated unified review panel as the default for pending files.
