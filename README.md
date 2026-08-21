@@ -8,7 +8,7 @@ AI Change Review is a local-first companion extension for Codex, Claude Code, Ai
 
 - Review created, modified, and deleted files from one Activity Bar view.
 - Keep or undo a complete file, or a single changed code block.
-- Native, theme-aware editor review with inline Keep/Undo controls and green/red pending-change decorations.
+- Dedicated unified review panel with inline Keep/Undo controls and change navigation.
 - Preserve dirty work that existed before the session started.
 - Recover active sessions after a VS Code reload or restart.
 - Optional always-on tracking for a workspace.
@@ -29,7 +29,7 @@ Run **AI Change Review: Toggle Always-On Tracking** once for a workspace to keep
 
 AI Change Review tracks *all included saved workspace changes* while a session is active. It cannot determine whether a change was made by an agent, you, a formatter, or another process. Avoid unrelated edits during a session.
 
-AI Change Review opens pending created and modified files in VS Code's normal editor, so syntax highlighting, colors, fonts, and accessibility settings follow your selected theme. It adds green/red pending-change decorations and native **Keep**/**Undo** CodeLens controls above each changed block. Deleted files use the dedicated review page because there is no current workspace file to open.
+AI Change Review opens pending files in a dedicated unified review panel with inline added/removed code, **Keep**/**Undo** controls, and change navigation. Set `aiChangeReview.inlineDiff` to `false` to use VS Code's native editor with theme-aware decorations and CodeLens controls instead.
 
 Keeping or undoing a block advances to the next pending change, including a change in another file. Once a file has no pending changes, it leaves the sidebar automatically and remains as final code in the editor.
 

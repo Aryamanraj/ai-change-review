@@ -2,6 +2,11 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.1.16 — 2026-08-21
+
+- Restore the dedicated unified review panel as the default for pending files.
+- Make the native editor review surface available by disabling `aiChangeReview.inlineDiff`.
+
 ## 0.1.15 — 2026-08-21
 
 - Preserve review-panel scroll position during unchanged background reconciliations.
