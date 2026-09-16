@@ -16,6 +16,9 @@ export class SessionManager implements vscode.Disposable {
   private reconciling = false;
   private mutating = false;
   private branchPromptOpen = false;
+  private debounce: NodeJS.Timeout | undefined;
+  private readonly touched = new Set<string>();
+  private settingsCache: { maxFileSizeBytes: number; exclude: string[]; reconcileIntervalMs: number } | undefined;
   private readonly gitIgnoreCache = new Map<string, ignore.Ignore | undefined>();
   private readonly hunkCache = new Map<string, { key: string; hunks: ReviewHunk[] }>();
   constructor(private readonly store: SnapshotStore, private readonly output: vscode.OutputChannel) {}
@@ -36,10 +39,21 @@ export class SessionManager implements vscode.Disposable {
     return this.records().reduce((total, record) => ({ files: total.files + 1, added: total.added + (record.addedLines ?? 0), removed: total.removed + (record.removedLines ?? 0) }), { files: 0, added: 0, removed: 0 });
   }
   record(uri: string): FileRecord | undefined { return this.session?.files[uri]; }
+  /** Read once per settings change: a scan asks for these for every file it touches. */
+  private get settings(): { maxFileSizeBytes: number; exclude: string[]; reconcileIntervalMs: number } {
+    if (!this.settingsCache) {
+      const configuration = vscode.workspace.getConfiguration("aiChangeReview");
+      this.settingsCache = {
+        maxFileSizeBytes: configuration.get<number>("maxFileSizeBytes", 5 * 1024 * 1024),
+        exclude: configuration.get<string[]>("exclude", []).map(part => part.replaceAll("**/", "").replaceAll("/**", "")),
+        reconcileIntervalMs: configuration.get<number>("reconcileIntervalMs", 5000)
+      };
+    }
+    return this.settingsCache;
+  }
   private excludedByConfig(uri: vscode.Uri): boolean {
     const path = uri.path;
-    const custom = vscode.workspace.getConfiguration("aiChangeReview").get<string[]>("exclude", []);
-    return DEFAULT_EXCLUDED.some(part => path.includes(part)) || custom.some(part => path.includes(part.replaceAll("**/", "").replaceAll("/**", "")));
+    return DEFAULT_EXCLUDED.some(part => path.includes(part)) || this.settings.exclude.some(part => path.includes(part));
   }
   private async excluded(uri: vscode.Uri): Promise<boolean> {
     if (this.excludedByConfig(uri)) { return true; }
@@ -79,8 +93,7 @@ export class SessionManager implements vscode.Disposable {
     try { const stat = await vscode.workspace.fs.stat(uri); return { mtime: stat.mtime, size: stat.size }; } catch { return undefined; }
   }
   private kind(bytes: Uint8Array): FileKind {
-    const max = vscode.workspace.getConfiguration("aiChangeReview").get<number>("maxFileSizeBytes", 5 * 1024 * 1024);
-    if (bytes.byteLength > max) { return "large"; }
+    if (bytes.byteLength > this.settings.maxFileSizeBytes) { return "large"; }
     return bytes.subarray(0, Math.min(bytes.byteLength, 8192)).includes(0) ? "binary" : "text";
   }
   private stats(baseline: Uint8Array | undefined, current: Uint8Array | undefined, kind: FileKind): { addedLines?: number; removedLines?: number } {
@@ -97,6 +110,7 @@ export class SessionManager implements vscode.Disposable {
     const folders = vscode.workspace.workspaceFolders;
     if (!folders?.length) { void vscode.window.showErrorMessage("Open a folder or workspace before starting AI Change Review."); return; }
     const files: Record<string, FileRecord> = {};
+    this.settingsCache = undefined;
     this.gitIgnoreCache.clear();
     this.hunkCache.clear();
     await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: "AI Change Review: capturing workspace baseline…", cancellable: true }, async (progress, token) => {
@@ -133,57 +147,93 @@ export class SessionManager implements vscode.Disposable {
   }
   private installObservers(): void {
     const watcher = vscode.workspace.createFileSystemWatcher("**/*");
-    const changed = () => { if (!this.mutating) { void this.schedule(); } };
-    this.disposables.push(watcher, watcher.onDidCreate(changed), watcher.onDidChange(changed), watcher.onDidDelete(changed), vscode.workspace.onDidSaveTextDocument(changed));
-    const interval = vscode.workspace.getConfiguration("aiChangeReview").get<number>("reconcileIntervalMs", 5000);
-    this.timer = setInterval(() => void this.reconcile(), interval);
+    const changed = (uri: vscode.Uri) => {
+      if (uri.path.endsWith("/.gitignore")) { this.gitIgnoreCache.clear(); }
+      // Excluded trees churn constantly — .git alone writes on every command —
+      // and waking a scan for them is pure cost.
+      if (this.mutating || this.excludedByConfig(uri)) { return; }
+      this.touched.add(uri.toString());
+      if (this.debounce) { return; }
+      this.debounce = setTimeout(() => { this.debounce = undefined; void this.drain(); }, 200);
+    };
+    this.disposables.push(watcher, watcher.onDidCreate(changed), watcher.onDidChange(changed), watcher.onDidDelete(changed),
+      vscode.workspace.onDidSaveTextDocument(document => changed(document.uri)),
+      vscode.workspace.onDidChangeConfiguration(event => { if (event.affectsConfiguration("aiChangeReview")) { this.settingsCache = undefined; this.gitIgnoreCache.clear(); } }));
+    this.timer = setInterval(() => void this.reconcile(), this.settings.reconcileIntervalMs);
   }
-  private async schedule(): Promise<void> { await new Promise(resolve => setTimeout(resolve, 200)); await this.reconcile(); }
-  async reconcile(): Promise<void> {
-    if (!this.session || this.reconciling || this.mutating) { return; }
+  /** Re-examine only what the watcher reported; the periodic pass is the safety net. */
+  private async drain(): Promise<void> {
+    const targets = [...this.touched];
+    this.touched.clear();
+    // A scan that could not run leaves the reports for the next attempt.
+    if (!await this.scan(targets)) { targets.forEach(uri => this.touched.add(uri)); }
+  }
+  async reconcile(): Promise<void> { await this.scan(); }
+  /** Returns whether the scan ran; it is skipped while another one or a mutation is in flight. */
+  private async scan(targets?: string[]): Promise<boolean> {
+    const session = this.session;
+    if (!session || this.reconciling || this.mutating) { return false; }
     this.reconciling = true;
+    let dirty = false;
     try {
-      this.gitIgnoreCache.clear();
       await this.detectBranchChange();
-      if (!this.session) { return; }
+      if (this.session !== session) { return true; }
+      const uris = targets ? targets.map(uri => vscode.Uri.parse(uri)) : await vscode.workspace.findFiles("**/*");
       const seen = new Set<string>();
-      for (const uri of await vscode.workspace.findFiles("**/*")) {
+      for (const uri of uris) {
         if (await this.excluded(uri)) { continue; }
-        const id = uri.toString(); seen.add(id);
-        let record = this.session.files[id];
-        try {
-          const bytes = await vscode.workspace.fs.readFile(uri);
-          const currentHash = hashBytes(bytes);
-          if (!record) {
-            const kind = this.kind(bytes);
-            record = { uri: id, label: vscode.workspace.asRelativePath(uri, false), baselineExists: false, kind, changeType: "created", currentHash, ...this.stats(undefined, bytes, kind) };
-            this.session.files[id] = record;
-          } else {
-            record.currentHash = currentHash;
-            record.changeType = !record.baselineExists ? "created" : currentHash === record.baselineHash ? undefined : "modified";
-            Object.assign(record, record.changeType ? this.stats(await this.store.readBaseline(record), bytes, record.kind) : { addedLines: undefined, removedLines: undefined });
-          }
-        } catch { /* inaccessible files are ignored until a later pass */ }
+        seen.add(uri.toString());
+        // A watcher event says the file changed, so its recorded stat cannot be trusted.
+        dirty = await this.examine(uri, Boolean(targets)) || dirty;
       }
-      for (const record of Object.values(this.session.files)) {
+      const records = targets
+        ? targets.map(uri => session.files[uri]).filter((record): record is FileRecord => Boolean(record))
+        : Object.values(session.files);
+      for (const record of records) {
+        // Anything the pass just examined is present and included by definition.
+        if (seen.has(record.uri)) { continue; }
         const uri = vscode.Uri.parse(record.uri);
-        if (await this.excluded(uri)) {
-          this.forget(record.uri);
-          continue;
-        }
-        if (seen.has(record.uri) || await this.stat(uri)) { continue; }
+        if (await this.excluded(uri)) { this.forget(record.uri); dirty = true; continue; }
+        if (await this.stat(uri)) { continue; }
         // A file created during the session and then deleted or renamed has no
         // baseline to restore, so the record is dropped instead of lingering as
         // a pending change that points at a path which no longer exists.
-        if (!record.baselineExists) { this.forget(record.uri); continue; }
+        if (!record.baselineExists) { this.forget(record.uri); dirty = true; continue; }
         if (record.changeType !== "deleted") {
           this.hunkCache.delete(record.uri);
-          record.changeType = "deleted"; record.currentHash = undefined;
+          record.changeType = "deleted"; record.currentHash = undefined; record.mtime = undefined; record.size = undefined;
           Object.assign(record, this.stats(await this.store.readBaseline(record), undefined, record.kind));
+          dirty = true;
         }
       }
-      await this.persist(); this.changes.fire();
+      if (dirty) { await this.persist(); this.changes.fire(); }
+      return true;
     } finally { this.reconciling = false; }
+  }
+  /** Brings one file's record up to date. Returns whether anything about it changed. */
+  private async examine(uri: vscode.Uri, force: boolean): Promise<boolean> {
+    const session = this.session;
+    if (!session) { return false; }
+    const id = uri.toString();
+    const record = session.files[id];
+    const stat = await this.stat(uri);
+    if (!stat) { return false; }
+    // Reading and hashing every file was the bulk of a scan. An unchanged size
+    // and modification time means the recorded result still describes the file.
+    if (!force && record?.currentHash && record.mtime === stat.mtime && record.size === stat.size) { return false; }
+    const bytes = await this.read(uri);
+    if (!bytes) { return false; }
+    const currentHash = hashBytes(bytes);
+    if (!record) {
+      const kind = this.kind(bytes);
+      session.files[id] = { uri: id, label: vscode.workspace.asRelativePath(uri, false), baselineExists: false, kind, changeType: "created", currentHash, mtime: stat.mtime, size: stat.size, ...this.stats(undefined, bytes, kind) };
+      return true;
+    }
+    const changeType: ChangeType | undefined = !record.baselineExists ? "created" : currentHash === record.baselineHash ? undefined : "modified";
+    const settled = record.currentHash === currentHash && record.changeType === changeType;
+    Object.assign(record, { currentHash, changeType, mtime: stat.mtime, size: stat.size });
+    if (!settled) { Object.assign(record, changeType ? this.stats(await this.store.readBaseline(record), bytes, record.kind) : { addedLines: undefined, removedLines: undefined }); }
+    return !settled;
   }
   async resetBaseline(): Promise<void> {
     if (!this.session) { return this.start(); }
@@ -217,48 +267,71 @@ export class SessionManager implements vscode.Disposable {
   }
   private forget(uri: string): void { this.hunkCache.delete(uri); if (this.session) { delete this.session.files[uri]; } }
   private async persist(): Promise<void> { if (this.session) { this.session.updatedAt = new Date().toISOString(); await this.store.save(this.session); } }
-  private async withMutation(action: () => Promise<void>): Promise<void> { this.mutating = true; try { await action(); } finally { this.mutating = false; await this.reconcile(); } }
+  private async withMutation(uris: string[], action: () => Promise<void>): Promise<void> {
+    this.mutating = true;
+    try { await action(); } finally {
+      this.mutating = false;
+      await this.persist();
+      // The decision itself is already reflected in memory, so the views are
+      // told straight away and the scan only reports what it also finds on disk.
+      this.changes.fire();
+      await this.scan(uris);
+    }
+  }
   async accept(record: FileRecord): Promise<void> {
+    if (!this.session) { return; }
+    await this.withMutation([record.uri], () => this.applyAccept(record));
+  }
+  private async applyAccept(record: FileRecord): Promise<void> {
     const session = this.session;
     if (!session) { return; }
-    await this.withMutation(async () => {
-      const uri = vscode.Uri.parse(record.uri);
-      // Accepting a deletion, and accepting a file that has since been deleted
-      // behind our back, both mean "there is nothing left to review here".
-      const bytes = record.changeType === "deleted" ? undefined : await this.read(uri);
-      if (!bytes) {
-        const forgettable = record.changeType !== "deleted" && !record.baselineExists;
-        Object.assign(record, { baselineExists: false, baselineSnapshotKey: undefined, baselineHash: undefined, baselineSize: undefined, changeType: undefined, addedLines: undefined, removedLines: undefined });
-        if (forgettable) { this.forget(record.uri); }
-      }
-      else {
-        const acceptedHunks = await this.hunks(record);
-        const updated = await this.store.writeBaseline({ ...record, kind: this.kind(bytes) }, bytes);
-        const accepted = acceptedHunks.map(hunk => ({ id: hunk.id, oldStart: hunk.oldStart, newStart: hunk.newStart, oldLines: hunk.oldLines, newLines: hunk.newLines, lines: hunk.lines, acceptedAt: new Date().toISOString() }));
-        Object.assign(record, updated, { changeType: undefined, addedLines: undefined, removedLines: undefined, acceptedFile: true, acceptedHunks: [...(record.acceptedHunks ?? []), ...accepted] });
-      }
-      await this.persist();
-    });
+    const uri = vscode.Uri.parse(record.uri);
+    // Accepting a deletion, and accepting a file that has since been deleted
+    // behind our back, both mean "there is nothing left to review here".
+    const bytes = record.changeType === "deleted" ? undefined : await this.read(uri);
+    if (!bytes) {
+      const forgettable = record.changeType !== "deleted" && !record.baselineExists;
+      Object.assign(record, { baselineExists: false, baselineSnapshotKey: undefined, baselineHash: undefined, baselineSize: undefined, changeType: undefined, addedLines: undefined, removedLines: undefined });
+      if (forgettable) { this.forget(record.uri); }
+      return;
+    }
+    const acceptedHunks = await this.hunks(record, true);
+    const updated = await this.store.writeBaseline({ ...record, kind: this.kind(bytes) }, bytes);
+    const accepted = acceptedHunks.map(hunk => ({ id: hunk.id, oldStart: hunk.oldStart, newStart: hunk.newStart, oldLines: hunk.oldLines, newLines: hunk.newLines, lines: hunk.lines, acceptedAt: new Date().toISOString() }));
+    Object.assign(record, updated, { changeType: undefined, addedLines: undefined, removedLines: undefined, acceptedFile: true, acceptedHunks: [...(record.acceptedHunks ?? []), ...accepted] });
+    this.hunkCache.delete(record.uri);
+  }
+  private async confirmReject(record: FileRecord): Promise<boolean> {
+    const open = vscode.workspace.textDocuments.find(document => document.uri.toString() === record.uri && document.isDirty);
+    if (!open) { return true; }
+    return Boolean(await vscode.window.showWarningMessage(`“${record.label}” has unsaved editor changes. Reject and discard them?`, { modal: true }, "Reject File"));
   }
   async reject(record: FileRecord): Promise<void> {
-    if (!this.session) { return; }
+    if (!this.session || !await this.confirmReject(record)) { return; }
+    await this.withMutation([record.uri], () => this.applyReject(record));
+  }
+  private async applyReject(record: FileRecord): Promise<void> {
     const uri = vscode.Uri.parse(record.uri);
-    const open = vscode.workspace.textDocuments.find(d => d.uri.toString() === record.uri && d.isDirty);
-    if (open && !await vscode.window.showWarningMessage(`“${record.label}” has unsaved editor changes. Reject and discard them?`, { modal: true }, "Reject File")) { return; }
-    await this.withMutation(async () => {
-      if (!record.baselineExists) { try { await vscode.workspace.fs.delete(uri, { useTrash: false }); } catch { /* already gone */ } }
-      else {
-        const bytes = await this.store.readBaseline(record);
-        if (!bytes) { throw new Error(`Baseline unavailable for ${record.label}`); }
-        const slash = uri.path.lastIndexOf("/");
-        if (slash > 0) { await vscode.workspace.fs.createDirectory(uri.with({ path: uri.path.slice(0, slash) })); }
-        await vscode.workspace.fs.writeFile(uri, bytes);
-      }
-      await this.persist();
+    if (!record.baselineExists) { try { await vscode.workspace.fs.delete(uri, { useTrash: false }); } catch { /* already gone */ } }
+    else {
+      const bytes = await this.store.readBaseline(record);
+      if (!bytes) { throw new Error(`Baseline unavailable for ${record.label}`); }
+      const slash = uri.path.lastIndexOf("/");
+      if (slash > 0) { await vscode.workspace.fs.createDirectory(uri.with({ path: uri.path.slice(0, slash) })); }
+      await vscode.workspace.fs.writeFile(uri, bytes);
+    }
+    this.hunkCache.delete(record.uri);
+  }
+  async acceptAll(): Promise<void> {
+    const records = [...this.records()];
+    await this.withMutation(records.map(record => record.uri), async () => { for (const record of records) { await this.applyAccept(record); } });
+  }
+  async rejectAll(): Promise<void> {
+    const records = [...this.records()];
+    await this.withMutation(records.map(record => record.uri), async () => {
+      for (const record of records) { if (await this.confirmReject(record)) { await this.applyReject(record); } }
     });
   }
-  async acceptAll(): Promise<void> { for (const record of [...this.records()]) { await this.accept(record); } }
-  async rejectAll(): Promise<void> { for (const record of [...this.records()]) { await this.reject(record); } }
   /**
    * The code lens, the gutter decorations and the review panel all ask for the
    * same hunks on every reconciliation and every keystroke, so the last result
@@ -305,24 +378,27 @@ export class SessionManager implements vscode.Disposable {
     return { patch, hunk: patch.hunks[index], meta, current, baseline };
   }
   async acceptHunk(record: FileRecord, hunkId: string): Promise<void> {
-    await this.withMutation(async () => {
-      const { patch, hunk, baseline } = await this.selectedPatch(record, hunkId);
+    await this.withMutation([record.uri], async () => {
+      const { patch, hunk, baseline, current } = await this.selectedPatch(record, hunkId);
       const applied = applyPatch(new TextDecoder().decode(baseline), { ...patch, hunks: [hunk] });
       if (applied === false) { throw new Error("Could not apply this change to the baseline. Refresh and try again."); }
-      Object.assign(record, await this.store.writeBaseline(record, new TextEncoder().encode(applied)));
+      const bytes = new TextEncoder().encode(applied);
+      // The file itself is untouched, so the scan that follows cannot tell that
+      // the remaining diff shrank: restate the counts against the new baseline.
+      Object.assign(record, await this.store.writeBaseline(record, bytes), this.stats(bytes, current, record.kind));
       const accepted: AcceptedHunk = { id: hunkId, oldStart: hunk.oldStart, newStart: hunk.newStart, oldLines: hunk.oldLines, newLines: hunk.newLines, lines: hunk.lines, acceptedAt: new Date().toISOString() };
       record.acceptedHunks = [...(record.acceptedHunks ?? []).filter(h => h.id !== hunkId), accepted];
-      await this.persist();
+      this.hunkCache.delete(record.uri);
     });
   }
   async rejectHunk(record: FileRecord, hunkId: string): Promise<void> {
-    await this.withMutation(async () => {
+    await this.withMutation([record.uri], async () => {
       const { patch, hunk, current } = await this.selectedPatch(record, hunkId);
       const reversed = reversePatch({ ...patch, hunks: [hunk] });
       const applied = applyPatch(new TextDecoder().decode(current), reversed);
       if (applied === false) { throw new Error("Could not reverse this change. Refresh and try again."); }
       await vscode.workspace.fs.writeFile(vscode.Uri.parse(record.uri), new TextEncoder().encode(applied));
-      await this.persist();
+      this.hunkCache.delete(record.uri);
     });
   }
   async reviewContent(record: FileRecord): Promise<{ current: string; hunks: ReviewHunk[]; accepted: AcceptedHunk[] }> {
@@ -332,6 +408,11 @@ export class SessionManager implements vscode.Disposable {
     return { current, hunks: await this.hunks(record), accepted: record.acceptedHunks ?? [] };
   }
   async end(discard: boolean): Promise<void> { this.stopObservers(); this.hunkCache.clear(); this.session = undefined; if (discard) { await this.store.clear(); } this.changes.fire(); }
-  private stopObservers(): void { this.disposables.splice(0).forEach(d => d.dispose()); if (this.timer) { clearInterval(this.timer); this.timer = undefined; } }
+  private stopObservers(): void {
+    this.disposables.splice(0).forEach(d => d.dispose());
+    this.touched.clear();
+    if (this.timer) { clearInterval(this.timer); this.timer = undefined; }
+    if (this.debounce) { clearTimeout(this.debounce); this.debounce = undefined; }
+  }
   dispose(): void { this.stopObservers(); this.changes.dispose(); }
 }

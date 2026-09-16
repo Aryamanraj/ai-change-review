@@ -11,6 +11,9 @@ export interface FileRecord {
   kind: FileKind;
   changeType?: ChangeType;
   currentHash?: string;
+  /** Stat of the file when `currentHash` was computed, so unchanged files can be skipped. */
+  mtime?: number;
+  size?: number;
   addedLines?: number;
   removedLines?: number;
   acceptedHunks?: AcceptedHunk[];
