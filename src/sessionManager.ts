@@ -120,10 +120,16 @@ export class SessionManager implements vscode.Disposable {
         if (token.isCancellationRequested) { throw new Error("Baseline capture cancelled."); }
         if (await this.excluded(uri)) { continue; }
         try {
+          // Stat first: a file written between the stat and the read keeps a
+          // modification time newer than the one recorded, so the next scan
+          // still notices it.
+          const stat = await this.stat(uri);
           const bytes = await vscode.workspace.fs.readFile(uri);
-          const record: FileRecord = { uri: uri.toString(), label: vscode.workspace.asRelativePath(uri, false), baselineExists: true, kind: this.kind(bytes) };
-          if (record.kind !== "large") { files[record.uri] = await this.store.writeBaseline(record, bytes); }
-          else { files[record.uri] = { ...record, baselineHash: hashBytes(bytes), baselineSize: bytes.byteLength }; }
+          const record: FileRecord = { uri: uri.toString(), label: vscode.workspace.asRelativePath(uri, false), baselineExists: true, kind: this.kind(bytes), mtime: stat?.mtime, size: stat?.size };
+          const captured = record.kind !== "large"
+            ? await this.store.writeBaseline(record, bytes)
+            : { ...record, baselineHash: hashBytes(bytes), baselineSize: bytes.byteLength };
+          files[record.uri] = { ...captured, currentHash: captured.baselineHash };
           count++;
           if (count % 50 === 0) { progress.report({ message: `${count} files snapshotted` }); }
         } catch (error) { this.output.appendLine(`Could not snapshot ${uri.toString()}: ${String(error)}`); }
