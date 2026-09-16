@@ -92,6 +92,10 @@ export class SessionManager implements vscode.Disposable {
   private async stat(uri: vscode.Uri): Promise<{ mtime: number; size: number } | undefined> {
     try { const stat = await vscode.workspace.fs.stat(uri); return { mtime: stat.mtime, size: stat.size }; } catch { return undefined; }
   }
+  /** What a record's hashes say about it, regardless of what it currently claims. */
+  private changeFor(record: FileRecord, currentHash: string): ChangeType | undefined {
+    return !record.baselineExists ? "created" : currentHash === record.baselineHash ? undefined : "modified";
+  }
   private kind(bytes: Uint8Array): FileKind {
     if (bytes.byteLength > this.settings.maxFileSizeBytes) { return "large"; }
     return bytes.subarray(0, Math.min(bytes.byteLength, 8192)).includes(0) ? "binary" : "text";
@@ -234,8 +238,10 @@ export class SessionManager implements vscode.Disposable {
     const stat = await this.stat(uri);
     if (!stat) { return "missing"; }
     // Reading and hashing every file was the bulk of a scan. An unchanged size
-    // and modification time means the recorded result still describes the file.
-    if (!force && record?.currentHash && record.mtime === stat.mtime && record.size === stat.size) { return "same"; }
+    // and modification time means the recorded result still describes the file —
+    // but only while the record agrees with its own hashes, since accepting a
+    // hunk rewrites the baseline without touching the file.
+    if (!force && record?.currentHash && record.mtime === stat.mtime && record.size === stat.size && record.changeType === this.changeFor(record, record.currentHash)) { return "same"; }
     const bytes = await this.read(uri);
     if (!bytes) { return "missing"; }
     const currentHash = hashBytes(bytes);
@@ -244,7 +250,7 @@ export class SessionManager implements vscode.Disposable {
       session.files[id] = { uri: id, label: vscode.workspace.asRelativePath(uri, false), baselineExists: false, kind, changeType: "created", currentHash, mtime: stat.mtime, size: stat.size, ...this.stats(undefined, bytes, kind) };
       return "changed";
     }
-    const changeType: ChangeType | undefined = !record.baselineExists ? "created" : currentHash === record.baselineHash ? undefined : "modified";
+    const changeType = this.changeFor(record, currentHash);
     const settled = record.currentHash === currentHash && record.changeType === changeType;
     Object.assign(record, { currentHash, changeType, mtime: stat.mtime, size: stat.size });
     if (!settled) { Object.assign(record, changeType ? this.stats(await this.store.readBaseline(record), bytes, record.kind) : { addedLines: undefined, removedLines: undefined }); }
@@ -290,7 +296,7 @@ export class SessionManager implements vscode.Disposable {
       // The decision itself is already reflected in memory, so the views are
       // told straight away and the scan only reports what it also finds on disk.
       this.changes.fire();
-      await this.scan(uris);
+      if (!await this.scan(uris)) { uris.forEach(uri => this.touched.add(uri)); this.scheduleDrain(); }
     }
   }
   async accept(record: FileRecord): Promise<void> {
@@ -398,9 +404,12 @@ export class SessionManager implements vscode.Disposable {
       const applied = applyPatch(new TextDecoder().decode(baseline), { ...patch, hunks: [hunk] });
       if (applied === false) { throw new Error("Could not apply this change to the baseline. Refresh and try again."); }
       const bytes = new TextEncoder().encode(applied);
-      // The file itself is untouched, so the scan that follows cannot tell that
-      // the remaining diff shrank: restate the counts against the new baseline.
-      Object.assign(record, await this.store.writeBaseline(record, bytes), this.stats(bytes, current, record.kind));
+      // The file itself is untouched, so a scan cannot see that the remaining
+      // diff shrank — or that accepting this hunk settled the whole file.
+      Object.assign(record, await this.store.writeBaseline(record, bytes));
+      const currentHash = hashBytes(current);
+      const changeType = this.changeFor(record, currentHash);
+      Object.assign(record, { currentHash, changeType }, changeType ? this.stats(bytes, current, record.kind) : { addedLines: undefined, removedLines: undefined });
       const accepted: AcceptedHunk = { id: hunkId, oldStart: hunk.oldStart, newStart: hunk.newStart, oldLines: hunk.oldLines, newLines: hunk.newLines, lines: hunk.lines, acceptedAt: new Date().toISOString() };
       record.acceptedHunks = [...(record.acceptedHunks ?? []).filter(h => h.id !== hunkId), accepted];
       this.hunkCache.delete(record.uri);
