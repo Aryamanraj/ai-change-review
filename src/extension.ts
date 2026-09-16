@@ -43,19 +43,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   };
   const showError = (error: unknown) => { output.appendLine(String(error)); void vscode.window.showErrorMessage(`AI Change Review: ${error instanceof Error ? error.message : String(error)}`); };
   type ReviewTarget = { record: FileRecord; hunkId?: string };
-  const pendingTargets = async (): Promise<ReviewTarget[]> => {
-    const targets: ReviewTarget[] = [];
-    for (const record of manager.records()) {
-      if (record.kind !== "text") {
-        targets.push({ record });
-        continue;
-      }
-      const hunks = await manager.hunks(record);
-      if (hunks.length) { targets.push(...hunks.map(hunk => ({ record, hunkId: hunk.id }))); }
-      else { targets.push({ record }); }
-    }
-    return targets;
-  };
   /** Native editor flow, used when reviewing from a normal workspace editor. */
   const openNativeReview = async (target: ReviewTarget): Promise<void> => {
     const { record, hunkId } = target;
@@ -79,15 +66,24 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       ReviewPanel.open(manager, record);
     }
   };
-  const advanceAfter = async (before: ReviewTarget[], current: ReviewTarget): Promise<void> => {
-    const index = before.findIndex(target => target.record.uri === current.record.uri && target.hunkId === current.hunkId);
-    const remaining = await pendingTargets();
-    if (!remaining.length) { return; }
-    const findRemaining = (candidates: ReviewTarget[]) => candidates
-      .map(candidate => remaining.find(target => target.record.uri === candidate.record.uri && target.hunkId === candidate.hunkId))
-      .find((target): target is ReviewTarget => Boolean(target));
-    const next = findRemaining(index >= 0 ? before.slice(index + 1) : before) ?? remaining[0];
-    await openNativeReview(next);
+  const hunkIndex = async (record: FileRecord, hunkId?: string): Promise<number> => {
+    if (!hunkId || record.kind !== "text") { return 0; }
+    return Math.max(0, (await manager.hunks(record)).findIndex(hunk => hunk.id === hunkId));
+  };
+  /**
+   * Land on the change that took the reviewed one's place, so review keeps
+   * moving forward. Only the reviewed file is re-diffed: enumerating hunks for
+   * every pending file made a single decision cost one diff per changed file.
+   */
+  const advanceAfter = async (uri: string, index: number): Promise<void> => {
+    const record = manager.record(uri);
+    if (record?.changeType) {
+      if (record.kind !== "text") { await openNativeReview({ record }); return; }
+      const hunks = await manager.hunks(record);
+      if (hunks.length) { await openNativeReview({ record, hunkId: hunks[Math.min(index, hunks.length - 1)].id }); return; }
+    }
+    const next = manager.nextPendingRecord(uri);
+    if (next && next.uri !== uri) { await openNativeReview({ record: next }); }
   };
   const endSession = async (): Promise<void> => {
     if (!manager.active) { return; }
@@ -100,11 +96,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     } else { await manager.end(true); }
   };
   const commands: [string, (...args: any[]) => any][] = [
-    ["aiChangeReview.toggleSession", () => manager.active ? endSession().catch(showError) : manager.start().catch(showError)],
-    ["aiChangeReview.startSession", () => manager.start().catch(showError)],
-    ["aiChangeReview.refresh", () => manager.reconcile().catch(showError)],
-    ["aiChangeReview.resetBaseline", () => manager.resetBaseline().catch(showError)],
-    ["aiChangeReview.openReview", () => { if (!manager.active) { return manager.start().catch(showError); } return vscode.commands.executeCommand("workbench.view.extension.aiChangeReview"); }],
+    ["aiChangeReview.toggleSession", () => manager.active ? endSession() : manager.start()],
+    ["aiChangeReview.startSession", () => manager.start()],
+    ["aiChangeReview.refresh", () => manager.reconcile()],
+    ["aiChangeReview.resetBaseline", () => manager.resetBaseline()],
+    ["aiChangeReview.openReview", () => { if (!manager.active) { return manager.start(); } return vscode.commands.executeCommand("workbench.view.extension.aiChangeReview"); }],
     ["aiChangeReview.openFileDiff", async (uri?: unknown) => {
       const record = fileArg(uri);
       if (!record) { return; }
@@ -116,22 +112,24 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }],
     ["aiChangeReview.acceptFile", async (uri?: unknown) => {
       const record = fileArg(uri); if (!record) { return; }
-      const before = await pendingTargets(); await manager.accept(record); await advanceAfter(before, { record });
+      await manager.accept(record); await advanceAfter(record.uri, 0);
     }],
     ["aiChangeReview.rejectFile", async (uri?: unknown) => {
       const record = fileArg(uri); if (!record) { return; }
-      const before = await pendingTargets(); await manager.reject(record); await advanceAfter(before, { record });
+      await manager.reject(record); await advanceAfter(record.uri, 0);
     }],
     ["aiChangeReview.acceptHunk", async (uri?: unknown, hunkId?: string) => {
       const record = fileArg(uri); if (!record || !hunkId) { return; }
-      const before = await pendingTargets(); await manager.acceptHunk(record, hunkId); await advanceAfter(before, { record, hunkId });
+      const index = await hunkIndex(record, hunkId);
+      await manager.acceptHunk(record, hunkId); await advanceAfter(record.uri, index);
     }],
     ["aiChangeReview.rejectHunk", async (uri?: unknown, hunkId?: string) => {
       const record = fileArg(uri); if (!record || !hunkId) { return; }
-      const before = await pendingTargets(); await manager.rejectHunk(record, hunkId); await advanceAfter(before, { record, hunkId });
+      const index = await hunkIndex(record, hunkId);
+      await manager.rejectHunk(record, hunkId); await advanceAfter(record.uri, index);
     }],
-    ["aiChangeReview.acceptAll", () => manager.acceptAll().catch(showError)],
-    ["aiChangeReview.rejectAll", () => manager.rejectAll().catch(showError)],
+    ["aiChangeReview.acceptAll", () => manager.acceptAll()],
+    ["aiChangeReview.rejectAll", () => manager.rejectAll()],
     ["aiChangeReview.toggleAlwaysOn", async () => {
       const configuration = vscode.workspace.getConfiguration("aiChangeReview");
       const next = !configuration.get<boolean>("alwaysOn", false);
@@ -139,10 +137,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       void vscode.window.showInformationMessage(next ? "AI Change Review will keep tracking this workspace across restarts." : "AI Change Review always-on tracking is disabled for this workspace.");
       if (next && !manager.active) { await manager.start(); }
     }],
-    ["aiChangeReview.endSession", () => endSession().catch(showError)]
+    ["aiChangeReview.endSession", () => endSession()]
   ];
+  // Every command reports its own failures: an unhandled rejection here reaches
+  // the user as a bare stack-trace notification with no hint of which file or
+  // action it came from.
+  const register = (id: string, handler: (...args: any[]) => any) => vscode.commands.registerCommand(id, (...args: any[]) => {
+    try { return Promise.resolve(handler(...args)).catch(showError); } catch (error) { showError(error); }
+  });
   const currentProvider: vscode.TextDocumentContentProvider = { provideTextDocumentContent: () => "" };
-  context.subscriptions.push(output, manager, status, decorations, treeView, vscode.workspace.registerTextDocumentContentProvider("ai-change-review-baseline", provider), vscode.workspace.registerTextDocumentContentProvider("ai-change-review-current", currentProvider), vscode.languages.registerCodeLensProvider([{ scheme: "file" }, { scheme: "vscode-remote" }, { scheme: "ai-change-review-current" }], codeLens), ...commands.map(([id, handler]) => vscode.commands.registerCommand(id, handler)));
+  context.subscriptions.push(output, manager, status, decorations, treeView, vscode.workspace.registerTextDocumentContentProvider("ai-change-review-baseline", provider), vscode.workspace.registerTextDocumentContentProvider("ai-change-review-current", currentProvider), vscode.languages.registerCodeLensProvider([{ scheme: "file" }, { scheme: "vscode-remote" }, { scheme: "ai-change-review-current" }], codeLens), ...commands.map(([id, handler]) => register(id, handler)));
   const saved = await store.load();
   const alwaysOn = vscode.workspace.getConfiguration("aiChangeReview").get<boolean>("alwaysOn", false);
   if (saved && alwaysOn) { await manager.recover(); }
