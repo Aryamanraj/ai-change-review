@@ -70,6 +70,13 @@ export class SessionManager implements vscode.Disposable {
       return undefined;
     }
   }
+  /** Workspace files can vanish mid-session; callers treat that as "no longer changed". */
+  private async read(uri: vscode.Uri): Promise<Uint8Array | undefined> {
+    try { return await vscode.workspace.fs.readFile(uri); } catch { return undefined; }
+  }
+  private async stat(uri: vscode.Uri): Promise<{ mtime: number; size: number } | undefined> {
+    try { const stat = await vscode.workspace.fs.stat(uri); return { mtime: stat.mtime, size: stat.size }; } catch { return undefined; }
+  }
   private kind(bytes: Uint8Array): FileKind {
     const max = vscode.workspace.getConfiguration("aiChangeReview").get<number>("maxFileSizeBytes", 5 * 1024 * 1024);
     if (bytes.byteLength > max) { return "large"; }
@@ -157,11 +164,17 @@ export class SessionManager implements vscode.Disposable {
         } catch { /* inaccessible files are ignored until a later pass */ }
       }
       for (const record of Object.values(this.session.files)) {
-        if (await this.excluded(vscode.Uri.parse(record.uri))) {
+        const uri = vscode.Uri.parse(record.uri);
+        if (await this.excluded(uri)) {
           delete this.session.files[record.uri];
           continue;
         }
-        if (record.baselineExists && !seen.has(record.uri)) {
+        if (seen.has(record.uri) || await this.stat(uri)) { continue; }
+        // A file created during the session and then deleted or renamed has no
+        // baseline to restore, so the record is dropped instead of lingering as
+        // a pending change that points at a path which no longer exists.
+        if (!record.baselineExists) { delete this.session.files[record.uri]; continue; }
+        if (record.changeType !== "deleted") {
           record.changeType = "deleted"; record.currentHash = undefined;
           Object.assign(record, this.stats(await this.store.readBaseline(record), undefined, record.kind));
         }
@@ -202,13 +215,20 @@ export class SessionManager implements vscode.Disposable {
   private async persist(): Promise<void> { if (this.session) { this.session.updatedAt = new Date().toISOString(); await this.store.save(this.session); } }
   private async withMutation(action: () => Promise<void>): Promise<void> { this.mutating = true; try { await action(); } finally { this.mutating = false; await this.reconcile(); } }
   async accept(record: FileRecord): Promise<void> {
-    if (!this.session) { return; }
+    const session = this.session;
+    if (!session) { return; }
     await this.withMutation(async () => {
       const uri = vscode.Uri.parse(record.uri);
-      if (record.changeType === "deleted") { Object.assign(record, { baselineExists: false, baselineSnapshotKey: undefined, baselineHash: undefined, baselineSize: undefined, changeType: undefined, addedLines: undefined, removedLines: undefined }); }
+      // Accepting a deletion, and accepting a file that has since been deleted
+      // behind our back, both mean "there is nothing left to review here".
+      const bytes = record.changeType === "deleted" ? undefined : await this.read(uri);
+      if (!bytes) {
+        const forgettable = record.changeType !== "deleted" && !record.baselineExists;
+        Object.assign(record, { baselineExists: false, baselineSnapshotKey: undefined, baselineHash: undefined, baselineSize: undefined, changeType: undefined, addedLines: undefined, removedLines: undefined });
+        if (forgettable) { delete session.files[record.uri]; }
+      }
       else {
         const acceptedHunks = await this.hunks(record);
-        const bytes = await vscode.workspace.fs.readFile(uri);
         const updated = await this.store.writeBaseline({ ...record, kind: this.kind(bytes) }, bytes);
         const accepted = acceptedHunks.map(hunk => ({ id: hunk.id, oldStart: hunk.oldStart, newStart: hunk.newStart, oldLines: hunk.oldLines, newLines: hunk.newLines, lines: hunk.lines, acceptedAt: new Date().toISOString() }));
         Object.assign(record, updated, { changeType: undefined, addedLines: undefined, removedLines: undefined, acceptedFile: true, acceptedHunks: [...(record.acceptedHunks ?? []), ...accepted] });
@@ -238,7 +258,8 @@ export class SessionManager implements vscode.Disposable {
   async hunks(record: FileRecord): Promise<ReviewHunk[]> {
     if (record.kind !== "text" || !record.changeType || record.changeType === "deleted") { return []; }
     const baseline = await this.store.readBaseline(record);
-    const current = await vscode.workspace.fs.readFile(vscode.Uri.parse(record.uri));
+    const current = await this.read(vscode.Uri.parse(record.uri));
+    if (!current) { return []; }
     const baselineText = new TextDecoder().decode(baseline ?? new Uint8Array());
     const currentText = new TextDecoder().decode(current);
     const patch = structuredPatch(record.label, record.label, baselineText, currentText);
@@ -256,7 +277,8 @@ export class SessionManager implements vscode.Disposable {
   }
   private async selectedPatch(record: FileRecord, hunkId: string): Promise<{ patch: StructuredPatch; hunk: StructuredPatchHunk; meta: ReviewHunk; current: Uint8Array; baseline: Uint8Array }> {
     const baseline = await this.store.readBaseline(record) ?? new Uint8Array();
-    const current = await vscode.workspace.fs.readFile(vscode.Uri.parse(record.uri));
+    const current = await this.read(vscode.Uri.parse(record.uri));
+    if (!current) { throw new Error("This change is stale. Refresh the diff and review it again."); }
     const patch = structuredPatch(record.label, record.label, new TextDecoder().decode(baseline), new TextDecoder().decode(current));
     const all = await this.hunks(record);
     const index = all.findIndex(h => h.id === hunkId);
@@ -288,7 +310,8 @@ export class SessionManager implements vscode.Disposable {
   }
   async reviewContent(record: FileRecord): Promise<{ current: string; hunks: ReviewHunk[]; accepted: AcceptedHunk[] }> {
     let current = "";
-    try { current = new TextDecoder().decode(await vscode.workspace.fs.readFile(vscode.Uri.parse(record.uri))); } catch { /* deleted file */ }
+    const bytes = await this.read(vscode.Uri.parse(record.uri));
+    if (bytes) { current = new TextDecoder().decode(bytes); }
     return { current, hunks: await this.hunks(record), accepted: record.acceptedHunks ?? [] };
   }
   async end(discard: boolean): Promise<void> { this.stopObservers(); this.session = undefined; if (discard) { await this.store.clear(); } this.changes.fire(); }
