@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.1.18 — 2026-09-16
+
+- Fix accepting or rejecting a change failing with a raw `ENOENT` because another tracked file had been deleted or renamed.
+- Drop records for files created during a session and then deleted, which previously blocked every decision until the session was reset.
+- Make a decision cost one file diff instead of one per pending file, and reuse hunks until the file or its baseline changes.
+- Scan only the files the watcher reports, skipping unchanged files by size and modification time, and ignore churn under excluded paths.
+
 ## 0.1.17 — 2026-08-21
 
 - Use the native editor for normal file opens and the unified review panel for sidebar selections.
