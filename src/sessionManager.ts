@@ -17,6 +17,7 @@ export class SessionManager implements vscode.Disposable {
   private mutating = false;
   private branchPromptOpen = false;
   private readonly gitIgnoreCache = new Map<string, ignore.Ignore | undefined>();
+  private readonly hunkCache = new Map<string, { key: string; hunks: ReviewHunk[] }>();
   constructor(private readonly store: SnapshotStore, private readonly output: vscode.OutputChannel) {}
   get active(): boolean { return Boolean(this.session); }
   get current(): ReviewSession | undefined { return this.session; }
@@ -97,6 +98,7 @@ export class SessionManager implements vscode.Disposable {
     if (!folders?.length) { void vscode.window.showErrorMessage("Open a folder or workspace before starting AI Change Review."); return; }
     const files: Record<string, FileRecord> = {};
     this.gitIgnoreCache.clear();
+    this.hunkCache.clear();
     await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: "AI Change Review: capturing workspace baseline…", cancellable: true }, async (progress, token) => {
       const uris = await vscode.workspace.findFiles("**/*");
       let count = 0;
@@ -166,15 +168,16 @@ export class SessionManager implements vscode.Disposable {
       for (const record of Object.values(this.session.files)) {
         const uri = vscode.Uri.parse(record.uri);
         if (await this.excluded(uri)) {
-          delete this.session.files[record.uri];
+          this.forget(record.uri);
           continue;
         }
         if (seen.has(record.uri) || await this.stat(uri)) { continue; }
         // A file created during the session and then deleted or renamed has no
         // baseline to restore, so the record is dropped instead of lingering as
         // a pending change that points at a path which no longer exists.
-        if (!record.baselineExists) { delete this.session.files[record.uri]; continue; }
+        if (!record.baselineExists) { this.forget(record.uri); continue; }
         if (record.changeType !== "deleted") {
+          this.hunkCache.delete(record.uri);
           record.changeType = "deleted"; record.currentHash = undefined;
           Object.assign(record, this.stats(await this.store.readBaseline(record), undefined, record.kind));
         }
@@ -212,6 +215,7 @@ export class SessionManager implements vscode.Disposable {
       else if (choice === "Keep reviewing old baseline") { this.session.gitHead = current; await this.persist(); }
     } finally { this.branchPromptOpen = false; }
   }
+  private forget(uri: string): void { this.hunkCache.delete(uri); if (this.session) { delete this.session.files[uri]; } }
   private async persist(): Promise<void> { if (this.session) { this.session.updatedAt = new Date().toISOString(); await this.store.save(this.session); } }
   private async withMutation(action: () => Promise<void>): Promise<void> { this.mutating = true; try { await action(); } finally { this.mutating = false; await this.reconcile(); } }
   async accept(record: FileRecord): Promise<void> {
@@ -225,7 +229,7 @@ export class SessionManager implements vscode.Disposable {
       if (!bytes) {
         const forgettable = record.changeType !== "deleted" && !record.baselineExists;
         Object.assign(record, { baselineExists: false, baselineSnapshotKey: undefined, baselineHash: undefined, baselineSize: undefined, changeType: undefined, addedLines: undefined, removedLines: undefined });
-        if (forgettable) { delete session.files[record.uri]; }
+        if (forgettable) { this.forget(record.uri); }
       }
       else {
         const acceptedHunks = await this.hunks(record);
@@ -255,32 +259,45 @@ export class SessionManager implements vscode.Disposable {
   }
   async acceptAll(): Promise<void> { for (const record of [...this.records()]) { await this.accept(record); } }
   async rejectAll(): Promise<void> { for (const record of [...this.records()]) { await this.reject(record); } }
-  async hunks(record: FileRecord): Promise<ReviewHunk[]> {
+  /**
+   * The code lens, the gutter decorations and the review panel all ask for the
+   * same hunks on every reconciliation and every keystroke, so the last result
+   * is reused while the tracked hashes still describe the file. `fresh` forces a
+   * re-read for callers that are about to write based on the result.
+   */
+  async hunks(record: FileRecord, fresh = false): Promise<ReviewHunk[]> {
     if (record.kind !== "text" || !record.changeType || record.changeType === "deleted") { return []; }
+    const cached = this.hunkCache.get(record.uri);
+    if (!fresh && record.currentHash && cached?.key === this.hunkKey(record, record.currentHash)) { return cached.hunks; }
     const baseline = await this.store.readBaseline(record);
     const current = await this.read(vscode.Uri.parse(record.uri));
     if (!current) { return []; }
     const baselineText = new TextDecoder().decode(baseline ?? new Uint8Array());
     const currentText = new TextDecoder().decode(current);
+    const currentHash = hashBytes(current);
+    const baselineHash = record.baselineHash ?? hashBytes(baseline ?? new Uint8Array());
     const patch = structuredPatch(record.label, record.label, baselineText, currentText);
-    return patch.hunks.map((hunk, index) => ({
+    const hunks = patch.hunks.map((hunk, index) => ({
       id: hashBytes(new TextEncoder().encode(`${record.uri}:${index}:${hunk.oldStart}:${hunk.newStart}:${hunk.lines.join("\n")}`)),
       oldStart: hunk.oldStart,
       newStart: hunk.newStart,
       oldLines: hunk.oldLines,
       newLines: hunk.newLines,
       currentStart: Math.max(0, hunk.newStart - 1),
-      baselineHash: record.baselineHash ?? hashBytes(baseline ?? new Uint8Array()),
-      currentHash: hashBytes(current),
+      baselineHash,
+      currentHash,
       lines: hunk.lines
     }));
+    this.hunkCache.set(record.uri, { key: this.hunkKey(record, currentHash), hunks });
+    return hunks;
   }
+  private hunkKey(record: FileRecord, currentHash: string): string { return `${record.baselineHash ?? ""}:${currentHash}`; }
   private async selectedPatch(record: FileRecord, hunkId: string): Promise<{ patch: StructuredPatch; hunk: StructuredPatchHunk; meta: ReviewHunk; current: Uint8Array; baseline: Uint8Array }> {
     const baseline = await this.store.readBaseline(record) ?? new Uint8Array();
     const current = await this.read(vscode.Uri.parse(record.uri));
     if (!current) { throw new Error("This change is stale. Refresh the diff and review it again."); }
     const patch = structuredPatch(record.label, record.label, new TextDecoder().decode(baseline), new TextDecoder().decode(current));
-    const all = await this.hunks(record);
+    const all = await this.hunks(record, true);
     const index = all.findIndex(h => h.id === hunkId);
     if (index < 0 || !patch.hunks[index]) { throw new Error("This change is stale. Refresh the diff and review it again."); }
     const meta = all[index];
@@ -314,7 +331,7 @@ export class SessionManager implements vscode.Disposable {
     if (bytes) { current = new TextDecoder().decode(bytes); }
     return { current, hunks: await this.hunks(record), accepted: record.acceptedHunks ?? [] };
   }
-  async end(discard: boolean): Promise<void> { this.stopObservers(); this.session = undefined; if (discard) { await this.store.clear(); } this.changes.fire(); }
+  async end(discard: boolean): Promise<void> { this.stopObservers(); this.hunkCache.clear(); this.session = undefined; if (discard) { await this.store.clear(); } this.changes.fire(); }
   private stopObservers(): void { this.disposables.splice(0).forEach(d => d.dispose()); if (this.timer) { clearInterval(this.timer); this.timer = undefined; } }
   dispose(): void { this.stopObservers(); this.changes.dispose(); }
 }
