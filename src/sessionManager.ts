@@ -159,20 +159,25 @@ export class SessionManager implements vscode.Disposable {
       // and waking a scan for them is pure cost.
       if (this.mutating || this.excludedByConfig(uri)) { return; }
       this.touched.add(uri.toString());
-      if (this.debounce) { return; }
-      this.debounce = setTimeout(() => { this.debounce = undefined; void this.drain(); }, 200);
+      this.scheduleDrain();
     };
     this.disposables.push(watcher, watcher.onDidCreate(changed), watcher.onDidChange(changed), watcher.onDidDelete(changed),
       vscode.workspace.onDidSaveTextDocument(document => changed(document.uri)),
       vscode.workspace.onDidChangeConfiguration(event => { if (event.affectsConfiguration("aiChangeReview")) { this.settingsCache = undefined; this.gitIgnoreCache.clear(); } }));
     this.timer = setInterval(() => void this.reconcile(), this.settings.reconcileIntervalMs);
   }
+  private scheduleDrain(): void {
+    if (this.debounce) { return; }
+    this.debounce = setTimeout(() => { this.debounce = undefined; void this.drain(); }, 200);
+  }
   /** Re-examine only what the watcher reported; the periodic pass is the safety net. */
   private async drain(): Promise<void> {
     const targets = [...this.touched];
     this.touched.clear();
-    // A scan that could not run leaves the reports for the next attempt.
-    if (!await this.scan(targets)) { targets.forEach(uri => this.touched.add(uri)); }
+    if (await this.scan(targets)) { return; }
+    // A scan that could not run leaves its reports for the next attempt.
+    targets.forEach(uri => this.touched.add(uri));
+    this.scheduleDrain();
   }
   async reconcile(): Promise<void> { await this.scan(); }
   /** Returns whether the scan ran; it is skipped while another one or a mutation is in flight. */
@@ -188,9 +193,13 @@ export class SessionManager implements vscode.Disposable {
       const seen = new Set<string>();
       for (const uri of uris) {
         if (await this.excluded(uri)) { continue; }
-        seen.add(uri.toString());
         // A watcher event says the file changed, so its recorded stat cannot be trusted.
-        dirty = await this.examine(uri, Boolean(targets)) || dirty;
+        const state = await this.examine(uri, Boolean(targets));
+        // Deletions reported by the watcher are left to the pass below, which
+        // owns the difference between a lost file and a lost record.
+        if (state === "missing") { continue; }
+        seen.add(uri.toString());
+        dirty = state === "changed" || dirty;
       }
       const records = targets
         ? targets.map(uri => session.files[uri]).filter((record): record is FileRecord => Boolean(record))
@@ -216,30 +225,30 @@ export class SessionManager implements vscode.Disposable {
       return true;
     } finally { this.reconciling = false; }
   }
-  /** Brings one file's record up to date. Returns whether anything about it changed. */
-  private async examine(uri: vscode.Uri, force: boolean): Promise<boolean> {
+  /** Brings one file's record up to date. */
+  private async examine(uri: vscode.Uri, force: boolean): Promise<"missing" | "same" | "changed"> {
     const session = this.session;
-    if (!session) { return false; }
+    if (!session) { return "same"; }
     const id = uri.toString();
     const record = session.files[id];
     const stat = await this.stat(uri);
-    if (!stat) { return false; }
+    if (!stat) { return "missing"; }
     // Reading and hashing every file was the bulk of a scan. An unchanged size
     // and modification time means the recorded result still describes the file.
-    if (!force && record?.currentHash && record.mtime === stat.mtime && record.size === stat.size) { return false; }
+    if (!force && record?.currentHash && record.mtime === stat.mtime && record.size === stat.size) { return "same"; }
     const bytes = await this.read(uri);
-    if (!bytes) { return false; }
+    if (!bytes) { return "missing"; }
     const currentHash = hashBytes(bytes);
     if (!record) {
       const kind = this.kind(bytes);
       session.files[id] = { uri: id, label: vscode.workspace.asRelativePath(uri, false), baselineExists: false, kind, changeType: "created", currentHash, mtime: stat.mtime, size: stat.size, ...this.stats(undefined, bytes, kind) };
-      return true;
+      return "changed";
     }
     const changeType: ChangeType | undefined = !record.baselineExists ? "created" : currentHash === record.baselineHash ? undefined : "modified";
     const settled = record.currentHash === currentHash && record.changeType === changeType;
     Object.assign(record, { currentHash, changeType, mtime: stat.mtime, size: stat.size });
     if (!settled) { Object.assign(record, changeType ? this.stats(await this.store.readBaseline(record), bytes, record.kind) : { addedLines: undefined, removedLines: undefined }); }
-    return !settled;
+    return settled ? "same" : "changed";
   }
   async resetBaseline(): Promise<void> {
     if (!this.session) { return this.start(); }
