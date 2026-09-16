@@ -2,6 +2,10 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.1.19 — 2026-09-16
+
+- Clear a file from the pending list once its last change is accepted, instead of leaving it to be accepted as a whole file.
+
 ## 0.1.18 — 2026-09-16
 
 - Fix accepting or rejecting a change failing with a raw `ENOENT` because another tracked file had been deleted or renamed.
