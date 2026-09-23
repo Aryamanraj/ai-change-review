@@ -5,6 +5,8 @@ import ignore = require("ignore");
 import { SnapshotStore, hashBytes } from "./snapshotStore";
 import { AcceptedHunk, ChangeType, FileKind, FileRecord, ReviewHunk, ReviewSession } from "./types";
 
+/** How long a full workspace pass stays fresh enough to skip another one. */
+const FULL_SCAN_INTERVAL_MS = 60_000;
 const DEFAULT_EXCLUDED = ["/.git/", "/.svn/", "/.hg/", "/node_modules/", "/vendor/", "/.next/", "/.nuxt/", "/dist/", "/build/", "/out/", "/coverage/", "/.turbo/", "/.cache/", "/target/", "/Pods/", "/.gradle/"];
 
 export class SessionManager implements vscode.Disposable {
@@ -17,6 +19,7 @@ export class SessionManager implements vscode.Disposable {
   private mutating = false;
   private branchPromptOpen = false;
   private debounce: NodeJS.Timeout | undefined;
+  private lastFullScan = 0;
   private readonly touched = new Set<string>();
   private settingsCache: { maxFileSizeBytes: number; exclude: string[]; reconcileIntervalMs: number } | undefined;
   private readonly gitIgnoreCache = new Map<string, ignore.Ignore | undefined>();
@@ -179,7 +182,20 @@ export class SessionManager implements vscode.Disposable {
     this.disposables.push(watcher, watcher.onDidCreate(changed), watcher.onDidChange(changed), watcher.onDidDelete(changed),
       vscode.workspace.onDidSaveTextDocument(document => changed(document.uri)),
       vscode.workspace.onDidChangeConfiguration(event => { if (event.affectsConfiguration("aiChangeReview")) { this.settingsCache = undefined; this.gitIgnoreCache.clear(); } }));
-    this.timer = setInterval(() => void this.reconcile(), this.settings.reconcileIntervalMs);
+    // Walking the workspace on a timer is what makes a large one feel slow, so
+    // the periodic pass only re-checks the files already known to differ. New
+    // and deleted files arrive through the watcher, and a full pass runs when
+    // the window is focused again — after an agent has worked in the background.
+    this.timer = setInterval(() => void this.scanPending(), this.settings.reconcileIntervalMs);
+    this.disposables.push(vscode.window.onDidChangeWindowState(state => { if (state.focused) { void this.fullScan(); } }));
+  }
+  private async scanPending(): Promise<void> {
+    const uris = this.records().map(record => record.uri);
+    if (uris.length) { await this.scan(uris); }
+  }
+  private async fullScan(): Promise<void> {
+    if (Date.now() - this.lastFullScan < FULL_SCAN_INTERVAL_MS) { return; }
+    await this.scan();
   }
   private scheduleDrain(): void {
     if (this.debounce) { return; }
@@ -204,6 +220,7 @@ export class SessionManager implements vscode.Disposable {
     try {
       await this.detectBranchChange();
       if (this.session !== session) { return true; }
+      if (!targets) { this.lastFullScan = Date.now(); }
       const uris = targets ? targets.map(uri => vscode.Uri.parse(uri)) : await vscode.workspace.findFiles("**/*", this.excludeGlob);
       const seen = new Set<string>();
       for (const uri of uris) {
