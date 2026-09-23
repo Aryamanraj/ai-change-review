@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.1.20 — 2026-09-23
+
+- Pass the exclude list to the file search, so build output and dependency directories are no longer enumerated on every pass.
+- Re-check only files with pending changes on the periodic pass; run a full workspace pass when the window regains focus, at most once a minute.
+- Queue editor decoration and code lens refreshes instead of rebuilding them on every keystroke, and refresh only the edited file.
+- Draw files with more than 500 added lines using the line background alone, without per-line inline markers.
+
 ## 0.1.19 — 2026-09-16
 
 - Clear a file from the pending list once its last change is accepted, instead of leaving it to be accepted as a whole file.
