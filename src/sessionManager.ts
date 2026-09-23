@@ -51,6 +51,17 @@ export class SessionManager implements vscode.Disposable {
     }
     return this.settingsCache;
   }
+  /**
+   * Excluded trees are pruned by the search service rather than filtered here:
+   * a workspace with a build directory or dependency tree can hold hundreds of
+   * thousands of files that the session will never track.
+   */
+  private get excludeGlob(): string {
+    const names = [...DEFAULT_EXCLUDED, ...this.settings.exclude]
+      .map(part => part.replace(/^\/+|\/+$/g, ""))
+      .filter(part => part && !part.includes("/"));
+    return `**/{${[...new Set(names)].join(",")}}/**`;
+  }
   private excludedByConfig(uri: vscode.Uri): boolean {
     const path = uri.path;
     return DEFAULT_EXCLUDED.some(part => path.includes(part)) || this.settings.exclude.some(part => path.includes(part));
@@ -118,7 +129,7 @@ export class SessionManager implements vscode.Disposable {
     this.gitIgnoreCache.clear();
     this.hunkCache.clear();
     await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: "AI Change Review: capturing workspace baseline…", cancellable: true }, async (progress, token) => {
-      const uris = await vscode.workspace.findFiles("**/*");
+      const uris = await vscode.workspace.findFiles("**/*", this.excludeGlob);
       let count = 0;
       for (const uri of uris) {
         if (token.isCancellationRequested) { throw new Error("Baseline capture cancelled."); }
@@ -193,7 +204,7 @@ export class SessionManager implements vscode.Disposable {
     try {
       await this.detectBranchChange();
       if (this.session !== session) { return true; }
-      const uris = targets ? targets.map(uri => vscode.Uri.parse(uri)) : await vscode.workspace.findFiles("**/*");
+      const uris = targets ? targets.map(uri => vscode.Uri.parse(uri)) : await vscode.workspace.findFiles("**/*", this.excludeGlob);
       const seen = new Set<string>();
       for (const uri of uris) {
         if (await this.excluded(uri)) { continue; }
