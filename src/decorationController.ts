@@ -4,16 +4,27 @@ import { SessionManager } from "./sessionManager";
 const REFRESH_DELAY_MS = 150;
 /** Upper bound per editor: applying a decoration per changed line slows scrolling in a very large diff. */
 const MAX_DECORATIONS = 5000;
+/** Past this many added lines the inline "+" markers are dropped; see `addedLines`. */
+const MAX_MARKERS = 500;
 
 /** Adds a lightweight native-editor review mode alongside the richer webview editor. */
 export class DecorationController implements vscode.Disposable {
-  private readonly added = vscode.window.createTextEditorDecorationType({
+  private static readonly addedStyle: vscode.DecorationRenderOptions = {
     isWholeLine: true,
     backgroundColor: new vscode.ThemeColor("diffEditor.insertedLineBackground"),
     overviewRulerColor: new vscode.ThemeColor("editorOverviewRuler.addedForeground"),
-    overviewRulerLane: vscode.OverviewRulerLane.Left,
+    overviewRulerLane: vscode.OverviewRulerLane.Left
+  };
+  private readonly added = vscode.window.createTextEditorDecorationType({
+    ...DecorationController.addedStyle,
     before: { contentText: "+ ", color: new vscode.ThemeColor("gitDecoration.addedResourceForeground") }
   });
+  /**
+   * The same highlight without the inline marker. An inline "before" decoration
+   * is laid out per line, so a file with thousands of added lines scrolls
+   * noticeably slower than one drawn with the line background alone.
+   */
+  private readonly addedLines = vscode.window.createTextEditorDecorationType(DecorationController.addedStyle);
   private readonly removed = vscode.window.createTextEditorDecorationType({
     overviewRulerColor: new vscode.ThemeColor("editorOverviewRuler.deletedForeground"),
     overviewRulerLane: vscode.OverviewRulerLane.Left,
@@ -59,7 +70,8 @@ export class DecorationController implements vscode.Disposable {
   private async apply(editor: vscode.TextEditor): Promise<void> {
     const record = this.manager.record(editor.document.uri.toString());
     if (!record?.changeType || record.kind !== "text") {
-      editor.setDecorations(this.added, []); editor.setDecorations(this.removed, []); return;
+      for (const type of [this.added, this.addedLines, this.removed]) { editor.setDecorations(type, []); }
+      return;
     }
     const hunks = await this.manager.hunks(record);
     const added: vscode.DecorationOptions[] = [];
@@ -79,13 +91,15 @@ export class DecorationController implements vscode.Disposable {
         } else { currentLine++; }
       }
     }
-    editor.setDecorations(this.added, added);
+    const marked = added.length <= MAX_MARKERS;
+    editor.setDecorations(this.added, marked ? added : []);
+    editor.setDecorations(this.addedLines, marked ? [] : added);
     editor.setDecorations(this.removed, removed);
   }
 
   dispose(): void {
     if (this.timer) { clearTimeout(this.timer); this.timer = undefined; }
     this.disposables.forEach(disposable => disposable.dispose());
-    this.added.dispose(); this.removed.dispose();
+    this.added.dispose(); this.addedLines.dispose(); this.removed.dispose();
   }
 }
