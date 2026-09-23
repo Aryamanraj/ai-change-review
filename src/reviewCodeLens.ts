@@ -1,13 +1,22 @@
 import * as vscode from "vscode";
 import { SessionManager } from "./sessionManager";
 
+const REFRESH_DELAY_MS = 250;
+
 /** Keeps the file-level decision controls visible in the current side of a diff. */
 export class ReviewCodeLensProvider implements vscode.CodeLensProvider {
   private readonly changed = new vscode.EventEmitter<void>();
   readonly onDidChangeCodeLenses = this.changed.event;
 
+  private timer: NodeJS.Timeout | undefined;
+
   constructor(private readonly manager: SessionManager) {
-    manager.onDidChange(() => this.changed.fire());
+    // A run of file changes would otherwise make VS Code re-query the lenses of
+    // every open editor several times a second.
+    manager.onDidChange(() => {
+      if (this.timer) { return; }
+      this.timer = setTimeout(() => { this.timer = undefined; this.changed.fire(); }, REFRESH_DELAY_MS);
+    });
   }
 
   provideCodeLenses(document: vscode.TextDocument): vscode.ProviderResult<vscode.CodeLens[]> {
