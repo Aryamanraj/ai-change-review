@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.1.21 — 2026-10-27
+
+- Keep the review panel header a fixed height, so the Keep, Undo, navigation and Open current file buttons stay in the same place from file to file.
+- Show the file name as the title with the folder path on the summary line, truncated on one row instead of wrapped.
+- Give the change counter a fixed width and place the per-change toolbar directly under the header.
+
 ## 0.1.20 — 2026-09-23
 
 - Pass the exclude list to the file search, so build output and dependency directories are no longer enumerated on every pass.
